@@ -40,6 +40,9 @@ body:
       label: 🗂️ 영역 (Area)
       multiple: true
       options:
+        - Rasberry-pi(라즈베리파이)
+        - network(네트워크)
+        - data(데이터)
         - k8s (Kubernetes/인프라)
         - gitops (ArgoCD/GitOps)
         - monitoring (Prometheus/Grafana/Loki)
