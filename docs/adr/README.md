@@ -46,4 +46,9 @@ NNN-kebab-case-decision.md
 ## 📚 현재 ADR 목록
 
 <!-- 새 ADR 추가 시 여기에 링크 추가 -->
-- (아직 없음)
+| 번호 | 제목 | 상태 | 결정일 |
+|------|------|------|--------|
+| [001](001-ai-snapshot-pvc-to-hostpath.md) | AI Snapshot Storage: Longhorn PVC → Node-local hostPath | Accepted | 2026-04-29 |
+| [002](002-failback-cron-instead-of-k8s-cronjob.md) | Failback Controller: Kubernetes CronJob → Master OS Cron | Accepted | 2026-04-29 |
+| [003](003-nfs-cold-storage-deferred.md) | NFS Cold Storage and Hot/Cold Tiering Deferred | Accepted | 2026-04-29 |
+| [004](004-safe-edge-config-github-gitops.md) | GitOps Source: Local Repo → GitHub Repo + ArgoCD UI Sync | Accepted | 2026-04-28 |
