@@ -142,7 +142,7 @@ kubectl get nodes -o wide
 변경 기록:
 
 ```text
-docs/changes/0001-ai-snapshot-pvc-to-hostpath.md
+docs/adr/001-ai-snapshot-pvc-to-hostpath.md
 ```
 
 확인:
@@ -160,7 +160,7 @@ kubectl -n monitoring get pvc
 
 - 상태: 완료
 - 진행 요약: Longhorn을 PVC 저장소 기준으로 구성하고, InfluxDB/Grafana 데이터는 Longhorn PVC에 두되 AI snapshot은 node-local hostPath로 분리했다.
-- 변경/확인: `safe-edge/safe-edge-config-main/monitoring/grafana.yaml`, InfluxDB PVC manifest, `docs/changes/0001-ai-snapshot-pvc-to-hostpath.md`를 확인했다.
+- 변경/확인: `safe-edge/safe-edge-config-main/monitoring/grafana.yaml`, InfluxDB PVC manifest, `docs/adr/001-ai-snapshot-pvc-to-hostpath.md`를 확인했다.
 - 검증: Longhorn volume `attached / healthy`, 장애 후 degraded에서 healthy 복귀를 확인했다.
 - 후속: 없음
 
@@ -179,14 +179,14 @@ kubectl -n monitoring get pvc
 변경 기록:
 
 ```text
-docs/changes/0003-nfs-cold-storage-deferred.md
+docs/adr/003-nfs-cold-storage-deferred.md
 ```
 
 ### GitHub Issue Comment Draft
 
 - 상태: 보류
 - 진행 요약: NFS Cold Storage와 Hot-Cold tiering은 M0 핵심 완료 조건에서 제외하고, 우선 InfluxDB 1일 retention과 AI snapshot 24시간 보존 정책으로 로컬 누적 데이터를 제한했다.
-- 변경/확인: 보류 판단은 `docs/changes/0003-nfs-cold-storage-deferred.md`와 `docs/ops/08_data_retention.md`에 정리했다.
+- 변경/확인: 보류 판단은 `docs/adr/003-nfs-cold-storage-deferred.md`와 `docs/ops/08_data_retention.md`에 정리했다.
 - 검증: InfluxDB `safe_edge_db` retention 1일 기준과 snapshot cleanup/daily purge 기준을 확인했다.
 - 후속: NFS 또는 cold storage가 필요해지는 시점에 별도 후속 issue로 재검토한다.
 
@@ -202,7 +202,7 @@ docs/changes/0003-nfs-cold-storage-deferred.md
 변경 기록:
 
 ```text
-docs/changes/0004-safe-edge-config-github-gitops.md
+docs/adr/004-safe-edge-config-github-gitops.md
 ```
 
 GitOps repo:
@@ -232,7 +232,7 @@ kubectl -n argocd get application -o wide
 
 - 상태: 완료
 - 진행 요약: 로컬 manifest 기준에서 GitHub GitOps repo와 ArgoCD Application sync 기준으로 전환했다.
-- 변경/확인: `safe-edge/safe-edge-config-main`의 `monitoring/`, `ai-apps/` 구성을 확인했고, 전환 기록은 `docs/changes/0004-safe-edge-config-github-gitops.md`에 남겼다.
+- 변경/확인: `safe-edge/safe-edge-config-main`의 `monitoring/`, `ai-apps/` 구성을 확인했고, 전환 기록은 `docs/adr/004-safe-edge-config-github-gitops.md`에 남겼다.
 - 검증: `safe-edge-monitoring`, `safe-edge-ai-apps` Application이 `Synced / Healthy` 상태로 동작하는 기준을 확인했다.
 - 후속: Hub ApplicationSet 기반 멀티 Spoke 배포는 M3에서 진행한다.
 
@@ -310,7 +310,7 @@ kubectl -n monitoring exec deploy/influxdb -- \
 변경 기록:
 
 ```text
-docs/changes/0001-ai-snapshot-pvc-to-hostpath.md
+docs/adr/001-ai-snapshot-pvc-to-hostpath.md
 ```
 
 확인:
@@ -342,7 +342,7 @@ kubectl -n ai-apps exec deploy/safe-edge-integrated-ai -c ai-processor -- mount 
 변경 기록:
 
 ```text
-docs/changes/0002-failback-cron-instead-of-k8s-cronjob.md
+docs/adr/002-failback-cron-instead-of-k8s-cronjob.md
 ```
 
 대상 Pod:
@@ -366,7 +366,7 @@ worker2 NotReady -> worker1 전체 Running: 약 32초
 
 - 상태: 완료
 - 진행 요약: worker2 장애 시 AI/Audio/BME 워크로드가 worker1로 넘어가고, worker2 복구 후 master OS cron 기반 failback으로 되돌아오는 정책을 검증했다.
-- 변경/확인: `safe-edge/scripts/safe-edge-failback.sh`, `safe-edge/scripts/safe-edge-preflight-repair.sh`, `docs/changes/0002-failback-cron-instead-of-k8s-cronjob.md`를 확인했다.
+- 변경/확인: `safe-edge/scripts/safe-edge-failback.sh`, `safe-edge/scripts/safe-edge-preflight-repair.sh`, `docs/adr/002-failback-cron-instead-of-k8s-cronjob.md`를 확인했다.
 - 검증: LAN 제거, `k3s-agent` 중지, 전원 제거 테스트에서 failover/failback 성공과 Longhorn Multi-Attach 재발 없음 기준을 확인했다.
 - 후속: Hub에 장애 상태를 송신하는 Edge Agent/pipeline status 검증은 M4/M7에서 진행한다.
 
@@ -402,8 +402,8 @@ ansible-playbook -i inventory/factory-a.ini playbooks/start_test.yml
 변경 기록:
 
 ```text
-docs/changes/0002-failback-cron-instead-of-k8s-cronjob.md
-docs/changes/0003-nfs-cold-storage-deferred.md
+docs/adr/002-failback-cron-instead-of-k8s-cronjob.md
+docs/adr/003-nfs-cold-storage-deferred.md
 ```
 
 ### GitHub Issue Comment Draft

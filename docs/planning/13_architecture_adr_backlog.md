@@ -19,7 +19,7 @@
 | `docs/planning/07_dashboard_vpc_extension_plan.md` | Dashboard VPC와 Processing VPC 분리, Dashboard가 Tailscale/ArgoCD/EKS API에 직접 접근하지 않는 기준 |
 | `docs/planning/09_m1_eks_vpc_decision_record.md` | 기존 Hub EKS/VPC MVP 기준, public/private subnet, EKS endpoint, Terraform root 분리 |
 | `docs/planning/12_two_vpc_mvp_architecture_decision.md` | 1번 Data/Dashboard VPC, 2번 Control/Management VPC 배치 합의 |
-| `docs/issues/edit.md` | 기존 issue 문서에 나중에 반영할 데이터 플레인/Edge Agent 수정 후보 |
+| `docs/issues/M4_data-plane.md` | 데이터 플레인/Edge Agent 구현 후보와 완료 조건 |
 
 ## ADR 후보 목록
 

@@ -31,40 +31,36 @@
 - `factory-b`, `factory-c`, ECR, GitHub Actions CI는 후속 단계다.
 - 현재 운영 source of truth는 `docs/ops/` 문서다.
 - 마일스톤 추적은 `docs/issues/` 문서를 따른다.
-- 계획과 실제 구현이 달라진 결정은 `docs/changes/`에서 추적한다.
+- 주요 아키텍처 결정과 변경 사유는 `docs/adr/`에서 추적한다.
 - 후속 관리자 대시보드는 `planning/07_dashboard_vpc_extension_plan.md`의 Dashboard VPC 방향을 따른다.
 - AWS CLI MFA 및 Terraform 접근 준비는 `planning/08_aws_cli_mfa_terraform_access.md`를 따른다.
 - 인프라/설정/CI/CD 책임 경계는 `planning/11_delivery_ownership_flow.md`를 따른다.
 - M1 EKS/VPC 설계 결정은 `planning/09_m1_eks_vpc_decision_record.md`를 따른다.
 - AWS 리소스 비용 기준과 갱신 규칙은 `ops/15_aws_cost_baseline.md`를 따른다.
 
-## 먼저 읽을 문서
+## 평가자 빠른 검토 순서
 
-1. `ops/05_factory_a_status.md`
-2. `ops/00_quick_start.md`
-3. `ops/01_safe_edge_bootstrap.md`
-4. `ops/06_argocd_gitops.md`
-5. `ops/07_grafana_dashboard.md`
-6. `ops/08_data_retention.md`
-7. `ops/09_failover_failback_test_results.md`
-8. `ops/10_edge_workload_placement.md`
-9. `ops/11_ansible_test_automation.md`
-10. `ops/12_iot_core_thing_secret_mount.md`
-11. `changes/README.md`
-12. `planning/06_edge_agent_deployment_plan.md`
-13. `planning/07_dashboard_vpc_extension_plan.md`
-14. `planning/08_aws_cli_mfa_terraform_access.md`
-15. `planning/09_m1_eks_vpc_decision_record.md`
-16. `planning/11_delivery_ownership_flow.md`
-17. `ops/13_hub_namespace_baseline.md`
-18. `ops/14_hub_run_commands.md`
-19. `ops/15_aws_cost_baseline.md`
-20. `ops/16_hub_prometheus_amp.md`
-21. `ops/17_hub_grafana_amp.md`
-22. `ops/20_tailscale_hub_spoke_runbook.md`
-23. `ops/21_hub_admin_ui_ingress.md`
-24. `issues/M0_factory-a_safe-edge-baseline.md`
-25. `issues/M1_hub-cloud.md`
+| 순서 | 확인할 내용 | 문서 |
+| ---: | --- | --- |
+| 1 | 프로젝트 요약과 핵심 기여 | `../README.md` |
+| 2 | 현재 구축된 `factory-a` 운영 구조 | `architecture/00_current_architecture.md` |
+| 3 | 최종 Cloud / VPC / Hub-Spoke 구조 | `planning/15_cloud_architecture_final.md` |
+| 4 | 핵심 아키텍처 결정 | `adr/README.md` |
+| 5 | M0~M7 진행 상태 | `issues/MASTER_CHECKLIST.md` |
+| 6 | 실제 장애 검증 결과 | `ops/09_failover_failback_test_results.md` |
+| 7 | 시연 흐름 | `demo/01_demo_scenario.md` |
+
+## 세부 문서 진입점
+
+| 목적 | 문서 |
+| --- | --- |
+| 운영 현황 | `ops/05_factory_a_status.md` |
+| 빠른 운영 점검 | `ops/00_quick_start.md` |
+| Edge Agent / Data Plane 계획 | `planning/06_edge_agent_deployment_plan.md`, `issues/M4_data-plane.md` |
+| Dashboard VPC / Risk Twin 계획 | `planning/07_dashboard_vpc_extension_plan.md`, `issues/M6_risk-twin-dashboard.md` |
+| Hub-Spoke Tailscale 연결 | `ops/20_tailscale_hub_spoke_runbook.md` |
+| 비용 기준 | `ops/15_aws_cost_baseline.md` |
+| 책임 경계 | `planning/11_delivery_ownership_flow.md` |
 
 ## 문서 구조
 
@@ -75,9 +71,10 @@ docs/
 │   ├── MASTER_CHECKLIST.md
 │   ├── M0_factory-a_safe-edge-baseline.md
 │   └── M1~M7...
-├── changes/
+├── adr/
 │   ├── README.md
-│   └── 0001~...
+│   ├── 000-template.md
+│   └── 001~...
 ├── ops/
 │   ├── 00_quick_start.md
 │   ├── 01_safe_edge_bootstrap.md

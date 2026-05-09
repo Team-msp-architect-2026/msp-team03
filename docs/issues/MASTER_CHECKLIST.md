@@ -2,7 +2,6 @@
 
 상태: working tracker
 기준 문서: `docs/issues/M0_factory-a_safe-edge-baseline.md` ~ `docs/issues/M7_integration-test.md`
-세션 이어받기: `docs/issues/SESSION_STATE.md`
 
 ## 사용 방식
 
