@@ -1,0 +1,377 @@
+# Failover / Failback 테스트 결과
+
+상태: source of truth
+기준일: 2026-04-29
+
+## 목적
+
+`factory-a`에서 수행한 worker2 장애 테스트 결과를 공식 운영 기록으로 남긴다.
+
+## 공통 테스트 대상
+
+```text
+bme280-sensor
+safe-edge-integrated-ai
+safe-edge-audio
+```
+
+정책:
+
+```text
+worker2 preferred affinity
+tolerationSeconds: 30
+worker1 failover
+master OS cron 기반 Kubernetes-only failback
+```
+
+## LAN 제거 테스트
+
+결과:
+
+```text
+Failover: 성공
+Failback: 성공
+10초 bucket 기준 실제 전환 구간 0-count bucket 없음
+전환 구간 중복 write 후보 있음
+pre-pull 효과 확인
+```
+
+핵심 타임라인:
+
+```text
+랜선 제거 후 첫 관찰: 13:34:49 KST
+worker2 NotReady: 13:35:23 KST
+worker1 전체 Running: 13:35:54 KST
+초기 5분 판정 보류 종료: 13:40:10 KST
+랜선 재연결 후 첫 관찰: 13:41:17 KST
+worker2 Ready: 13:41:17 KST
+worker2 전체 Running: 13:43:08 KST
+```
+
+## 전원 제거 테스트
+
+결과:
+
+```text
+Failover: 성공
+Failback: 성공
+Longhorn degraded 발생 후 healthy 복귀
+10초 bucket 기준 데이터 공백 확인
+1초 bucket 기준 짧은 공백 후보 확인
+failback 전환 구간 일부 중복 write 후보 확인
+```
+
+Failover 시간:
+
+```text
+전원 제거 첫 관찰 -> worker2 NotReady: 약 42초
+worker2 NotReady -> worker1 전체 Running: 약 32초
+전원 제거 첫 관찰 -> worker1 전체 Running: 약 74초
+```
+
+Failback 시간:
+
+```text
+전원 재연결 첫 관찰 -> worker2 Ready: 약 21초
+worker2 Ready -> worker2 전체 Running: 약 1분 50초
+전원 재연결 첫 관찰 -> worker2 전체 Running: 약 2분 11초
+전원 재연결 첫 관찰 -> Longhorn healthy: 약 2분 22초
+```
+
+1초 bucket 연속 공백:
+
+```text
+failover environment_data: 최대 65초
+failover ai_detection: 최대 72초
+failover acoustic_detection: 최대 75초
+failback environment_data: 최대 2초
+failback ai_detection: 최대 2초
+failback acoustic_detection: 최대 2초
+```
+
+## 분석 Query
+
+10초 bucket:
+
+```sql
+SELECT count(temperature)
+FROM environment_data
+WHERE time >= '<START>' AND time <= '<END>'
+GROUP BY time(10s) fill(0)
+```
+
+1초 bucket:
+
+```sql
+SELECT count(temperature)
+FROM environment_data
+WHERE time >= '<START>' AND time <= '<END>'
+GROUP BY time(1s) fill(0)
+```
+
+동일 방식으로 `ai_detection.fire_detected`, `acoustic_detection.is_danger`도 확인한다.
+
+## 남은 리스크
+
+```text
+데이터 공백 허용 범위 결정 필요
+failback 전환 구간 중복 write 처리 정책 필요
+writer node tag 또는 active writer guard 필요성 검토
+Grafana에서 장애 시간대 공백/스파이크 시각 확인 필요
+```
+
+## Longhorn PVC 적용 후 재검증
+
+2026-04-29에 AI snapshot 저장을 Longhorn RWO PVC `safe-edge-ai-snapshots`로 유지한 상태에서 추가 검증했다.
+
+### test_03 k3s-agent 중지
+
+```text
+Failover: 부분 성공
+Failback: 성공
+bme280/audio: worker1 Running
+AI: worker1 ContainerCreating, Multi-Attach 발생
+원인: 기존 worker2 AI Pod가 RWO PVC를 사용 중인 것으로 남음
+```
+
+### test_04 랜선 제거
+
+```text
+Failover: 부분 성공
+Failback: 성공
+bme280/audio: worker1 Running
+AI: 5분 이상 worker1 Running 실패
+Longhorn: safe-edge-ai-snapshots unknown/attaching 관찰
+최종: 랜선 재연결 후 worker2 Running, Longhorn healthy 복귀
+```
+
+### test_05 watchdog reboot fencing
+
+```text
+watchdog 설치: 성공
+master API unreachable 감지: 성공
+worker2 reboot fencing: 성공
+bme280/audio worker1 failover: 성공
+AI worker1 장기 failover: 미확인
+worker2 자기 복구/failback: 성공
+Longhorn 최종 healthy: 성공
+worker1 최대 관찰: 1033m CPU, 5492Mi memory, 68%
+```
+
+해석:
+
+```text
+현재 watchdog reboot는 worker2 stale writer를 제거하고 self-healing을 빠르게 만드는 데 효과가 있다.
+하지만 장기 worker1 AI failover를 보장하려면 worker2를 계속 격리하는 외부 power fencing 또는 전원 차단 상황을 별도로 검증해야 한다.
+AI failover 실패 원인은 CPU/메모리가 아니라 Longhorn RWO PVC attach 제약이다.
+```
+
+### test_06 worker2 장기 격리 중 AI worker1 failover
+
+```text
+worker2 reboot 후 master API 차단 유지: 성공
+worker2 NotReady 유지: 성공
+bme280/audio worker1 failover: 성공
+AI worker1 자동 failover: 실패
+AI worker1 수동 stale Pod 정리 후 Running: 성공
+worker2 복구/failback: 성공
+Longhorn 최종 healthy: 성공
+```
+
+핵심 관찰:
+
+```text
+15:27:22 KST
+safe-edge-integrated-ai: worker1 ContainerCreating
+safe-edge-ai-snapshots: attaching/unknown
+VolumeAttachment: worker2 attached=true
+worker1 memory: 5472Mi, 67%
+
+15:29:03 KST
+기존 worker2 AI Pod 강제 삭제 후
+safe-edge-integrated-ai: worker1 2/2 Running
+safe-edge-ai-snapshots: attached/degraded, worker1
+worker1 memory: 5472Mi, 67%
+
+15:34:18 KST
+worker2 복구 후
+AI/audio/BME: worker2 Running
+safe-edge-ai-snapshots: attached/healthy, worker2
+worker2 memory: 3715Mi, 46%
+```
+
+해석:
+
+```text
+현재 구성에서 AI Longhorn RWO PVC는 worker2 장애 시 자동으로 worker1에 안정 attach되지 않는다.
+실패 원인은 worker1 리소스 부족이 아니라 기존 worker2 AI Pod/VolumeAttachment가 stale 상태로 남는 것이다.
+기존 writer가 fencing으로 확실히 종료됐음을 보장한 뒤 stale Pod/VolumeAttachment 정리를 수행하면 worker1 AI Running은 가능하다.
+```
+
+## AI Snapshot PVC 제거 후 재검증
+
+2026-04-29에 AI snapshot 저장을 Longhorn RWO PVC에서 node-local hostPath로 변경하고, worker2 fencing watchdog을 제거했다.
+
+```text
+/app/snapshots -> /var/lib/safe-edge/snapshots hostPath
+ai-apps PVC: 없음
+safe-edge-agent-watchdog: 제거
+GitOps revision: 0edffca74312568ff829ef51e4c561a667f0cf8c
+```
+
+### test_07 k3s-agent 중지
+
+```text
+Failover: 성공
+Failback: 성공
+bme280/audio: worker1 Running
+AI: worker1 2/2 Running
+Longhorn Multi-Attach: 재발 없음
+InfluxDB ai_detection write: 지속 확인
+```
+
+핵심 관찰:
+
+```text
+16:02:51 KST
+worker2: NotReady
+safe-edge-integrated-ai: worker1 2/2 Running
+safe-edge-audio: worker1 Running
+bme280-sensor: worker1 Running
+worker1 memory: 5845Mi, 72%
+
+16:07:49 KST
+worker2: Ready
+safe-edge-integrated-ai: worker2 2/2 Running
+safe-edge-audio: worker2 Running
+bme280-sensor: worker2 Running
+InfluxDB ai_detection count over last 2m: 110
+```
+
+해석:
+
+```text
+AI 추론 결과는 InfluxDB를 통해 Longhorn에 저장된다.
+Snapshot 이미지는 node-local hostPath에 임시 저장된다.
+AI Pod가 Longhorn RWO snapshot PVC를 기다리지 않으므로 worker1 failover가 정상 동작한다.
+```
+
+### test_08 k3s-agent 중지 재검증
+
+Daily snapshot purge CronJob 추가 후 같은 방식으로 재검증했다.
+
+```text
+Failover: 성공
+Failback: 성공
+AI worker1 2/2 Running: 성공
+audio/BME worker1 Running: 성공
+InfluxDB ai_detection write: 지속 확인
+Longhorn Multi-Attach: 재발 없음
+```
+
+핵심 관찰:
+
+```text
+16:32:14 KST
+worker2 k3s-agent stop
+
+16:33:00 KST
+worker2 metrics unknown, kubectl node status는 아직 Ready
+
+16:34:28 KST
+worker2 NotReady
+safe-edge-integrated-ai: worker1 2/2 Running
+safe-edge-audio: worker1 Running
+bme280-sensor: worker1 Running
+worker1 memory: 5835Mi, 72%
+
+16:37:17 KST
+worker2 Ready
+AI/audio/BME: worker2 Running
+InfluxDB ai_detection count over last 2m: 126
+```
+
+실제 랜선 제거와의 차이:
+
+```text
+k3s-agent stop은 Kubernetes agent만 멈추며 OS/SSH/물리 NIC는 살아 있다.
+랜선 제거는 kubelet heartbeat뿐 아니라 Pod network, node-exporter, Longhorn/CSI 통신까지 끊긴다.
+따라서 네트워크 timeout, 데이터 공백, 기존 worker2 프로세스의 로컬 잔존은 랜선 제거 테스트에서 별도 확인해야 한다.
+다만 현재 AI Pod는 snapshot PVC를 사용하지 않으므로, 과거 safe-edge-ai-snapshots RWO Multi-Attach 문제는 랜선 제거에서도 재발 가능성이 낮다.
+```
+
+### test_09 worker2 랜선 제거
+
+AI snapshot hostPath 구성에서 실제 worker2 물리 네트워크 단절을 검증했다.
+
+```text
+Failover: 성공
+Failback: 성공
+AI worker1 2/2 Running: 성공
+audio/BME worker1 Running: 성공
+InfluxDB ai_detection write: 지속 확인
+Longhorn Multi-Attach: 재발 없음
+```
+
+핵심 관찰:
+
+```text
+16:48:12 KST
+랜선 제거 직후
+worker2: Ready
+AI/audio/BME: worker2 Running
+
+16:50:15 KST
+worker2: NotReady
+safe-edge-integrated-ai: worker1 2/2 Running
+safe-edge-audio: worker1 Running
+bme280-sensor: worker1 Running
+InfluxDB ai_detection count over last 2m: 64
+worker1 memory: 5837Mi, 72%
+
+16:53:42 KST
+worker2: NotReady
+AI/audio/BME: worker1 Running 유지
+InfluxDB ai_detection count over last 2m: 97
+
+17:02:35 KST
+랜선 재연결 후 worker2 Ready
+safe-edge-integrated-ai: worker2 2/2 Running
+bme280-sensor: worker2 Running
+audio: 아직 worker1 Running
+
+17:04:24 KST
+AI/audio/BME: worker2 Running
+InfluxDB ai_detection count over last 2m: 117
+```
+
+해석:
+
+```text
+랜선 제거는 k3s-agent stop보다 Node Ready/metrics/failback 타이밍이 더 단계적으로 변한다.
+하지만 현재 AI Pod는 snapshot PVC를 사용하지 않으므로, worker1 failover 시 ContainerCreating 또는 Multi-Attach에 막히지 않았다.
+AI 추론 결과는 InfluxDB를 통해 계속 기록됐고, worker2 재연결 후 정상 failback됐다.
+```
+
+InfluxDB 데이터 공백:
+
+```text
+분석 구간: 2026-04-29 16:45:00 KST ~ 17:10:00 KST
+
+1초 bucket 최대 연속 0-count:
+ai_detection:        87초  (16:47:56 ~ 16:49:22)
+acoustic_detection:  90초  (16:47:56 ~ 16:49:25)
+environment_data:    83초  (16:47:54 ~ 16:49:16)
+
+10초 bucket 운영 기준 0-count:
+ai_detection:        80초  (16:48:00 ~ 16:49:19)
+acoustic_detection:  80초  (16:48:00 ~ 16:49:19)
+environment_data:    70초  (16:48:00 ~ 16:49:09)
+```
+
+운영 판단:
+
+```text
+이번 랜선 제거 테스트의 실질적인 InfluxDB 데이터 공백은 약 1분 20초 ~ 1분 30초다.
+BME environment_data는 샘플 주기가 1초보다 느려 1초 bucket에서는 평상시에도 0-count가 섞일 수 있으므로, 운영 판단은 10초 bucket 기준이 더 적절하다.
+```
