@@ -38,8 +38,8 @@
 
 | 역할 | 이름 | 주요 담당 | GitHub |
 |:---:|:---:|:---|:---:|
-| 팀장 | 김민수 | factory-a/c · Control/Management VPC · CI/CD | @ |
-| 팀원 | 김종원 | factory-b · Data/Dashboard VPC | @ |
+| 팀장 | 김민수 | factory-a/c · Control/Management VPC · CI/CD | [@gitminsoo](https://github.com/gitminsoo) |
+| 팀원 | 김종원 | factory-b · Data/Dashboard VPC | [@JJong-03](https://github.com/JJong-03) |
 
 ---
 
@@ -158,16 +158,19 @@ factory-a / factory-b / factory-c
 ### Architecture Diagrams
 
 #### Data Plane
-
-**[Data Plane draw.io 이미지 붙여넣기 위치]**
+<img width="1171" height="840" alt="data_plane" src="https://github.com/user-attachments/assets/65a77e70-8c6d-41f1-aeb3-6bc4974f088f" />
 
 #### Control Plane
-
-**[Control Plane draw.io 이미지 붙여넣기 위치]**
+<img width="1281" height="721" alt="control_plane" src="https://github.com/user-attachments/assets/708f028a-acfa-4efa-ab5f-71cdce10abc9" />
 
 #### Cloud Infra
+<img width="782" height="772" alt="cloud_infra" src="https://github.com/user-attachments/assets/2e0c4143-74ff-43dc-9b1f-3b93757f0c9a" />
 
-**[Cloud Infra draw.io 이미지 붙여넣기 위치]**
+
+#### Architecture detail overview
+<img width="1491" height="1383" alt="01_re4" src="https://github.com/user-attachments/assets/4226e03c-8d87-48ba-9a91-5600278b78ec" />
+
+
 
 ---
 
