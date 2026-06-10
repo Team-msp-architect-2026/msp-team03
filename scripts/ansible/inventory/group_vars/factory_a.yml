@@ -1,0 +1,88 @@
+---
+factory_a_ssh_user: REPLACE_FACTORY_A_SSH_USER
+
+factory_a_nodes:
+  master:
+    name: master
+    ip: 10.10.10.10
+    password_var: factory_a_master_password
+  worker1:
+    name: worker1
+    ip: 10.10.10.11
+    password_var: factory_a_worker1_password
+  worker2:
+    name: worker2
+    ip: 10.10.10.12
+    password_var: factory_a_worker2_password
+
+factory_a_metal_lb:
+  argocd_pool: 10.10.10.200/32
+  safe_edge_pool: 10.10.10.201-10.10.10.250
+
+factory_a_services:
+  argocd_server:
+    name: argocd-server
+    ip: 10.10.10.200
+  longhorn_frontend:
+    name: longhorn-frontend-lb
+    ip: 10.10.10.201
+    url: http://10.10.10.201
+  grafana:
+    name: grafana-svc
+    ip: 10.10.10.202
+  traefik:
+    name: traefik
+    ip: 10.10.10.203
+
+factory_a_workloads:
+  preferred_node: worker2
+  failover_node: worker1
+  bme280_app: bme280-sensor
+  integrated_ai_app: safe-edge-integrated-ai
+  audio_app: safe-edge-audio
+  prepull_app: safe-edge-image-prepull
+
+factory_a_tailscale:
+  master_hostname: factory-a-master
+  master_ipv4: 100.x.x.x
+  master_fqdn: factory-a-master.tailf83767.ts.net
+
+factory_a_network:
+  cluster_interface: eth0
+  internet_interface: wlan0
+  cluster_cidr_prefix: 24
+  cluster_route_metric: 500
+  internet_route_metric: 100
+  configure_network_manager: true
+  enforce_tailscale_no_accept_routes: true
+
+factory_a_master_ssh_host: "{{ lookup('env', 'AEGIS_FACTORY_A_MASTER_SSH_HOST') | default(factory_a_nodes.master.ip, true) }}"
+factory_a_worker1_ssh_host: "{{ lookup('env', 'AEGIS_FACTORY_A_WORKER1_SSH_HOST') | default(factory_a_nodes.worker1.ip, true) }}"
+factory_a_worker2_ssh_host: "{{ lookup('env', 'AEGIS_FACTORY_A_WORKER2_SSH_HOST') | default(factory_a_nodes.worker2.ip, true) }}"
+
+factory_a_ssh_hosts:
+  master: "{{ factory_a_master_ssh_host }}"
+  worker1: "{{ factory_a_worker1_ssh_host }}"
+  worker2: "{{ factory_a_worker2_ssh_host }}"
+
+factory_a_os_baseline_packages:
+  - curl
+  - wget
+  - vim
+  - git
+  - jq
+  - bash
+  - grep
+  - gawk
+  - util-linux
+  - open-iscsi
+  - nfs-common
+  - cryptsetup
+  - dmsetup
+  - i2c-tools
+  - alsa-utils
+
+ansible_user: "{{ factory_a_ssh_user }}"
+ansible_host: "{{ factory_a_ssh_hosts[inventory_hostname] | default(factory_a_nodes[inventory_hostname].ip) }}"
+ansible_password: "{{ lookup('vars', factory_a_nodes[inventory_hostname].password_var) }}"
+ansible_become_password: "{{ lookup('vars', factory_a_nodes[inventory_hostname].password_var) }}"
