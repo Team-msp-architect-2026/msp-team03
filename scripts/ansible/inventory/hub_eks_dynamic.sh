@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+HUB_TERRAFORM_DIR="${HUB_TERRAFORM_DIR:-${REPO_ROOT}/infra/hub}"
+
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/lib/config.sh"
+aegis_load_config "${REPO_ROOT}"
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/lib/terraform.sh"
+
+if [[ "${1:-}" != "--list" && "${1:-}" != "" ]]; then
+  echo '{"_meta":{"hostvars":{}}}'
+  exit 0
+fi
+
+if ! command -v terraform >/dev/null 2>&1; then
+  echo "terraform is required for hub dynamic inventory" >&2
+  exit 1
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "jq is required for hub dynamic inventory" >&2
+  exit 1
+fi
+
+if ! terraform_output="$(
+  aegis_terraform_init_backend "${HUB_TERRAFORM_DIR}" >&2
+  terraform -chdir="${HUB_TERRAFORM_DIR}" output -json
+)"; then
+  echo "failed to read infra/hub Terraform outputs from ${HUB_TERRAFORM_DIR}" >&2
+  exit 1
+fi
+
+cluster_name="$(jq -r '.cluster_name.value // empty' <<<"${terraform_output}")"
+aws_region="$(jq -r '.aws_region.value // empty' <<<"${terraform_output}")"
+cluster_endpoint="$(jq -r '.cluster_endpoint.value // empty' <<<"${terraform_output}")"
+update_kubeconfig_command="$(jq -r '.update_kubeconfig_command.value // empty' <<<"${terraform_output}")"
+vpc_id="$(jq -r '.vpc_id.value // empty' <<<"${terraform_output}")"
+risk_normalizer_irsa_role_arn="$(jq -r '.risk_normalizer_irsa_role_arn.value // empty' <<<"${terraform_output}")"
+risk_normalizer_service_account_namespace="$(jq -r '.risk_normalizer_service_account.value.namespace // empty' <<<"${terraform_output}")"
+risk_normalizer_service_account_name="$(jq -r '.risk_normalizer_service_account.value.name // empty' <<<"${terraform_output}")"
+aws_lb_controller_irsa_role_arn="$(jq -r '.aws_lb_controller_irsa_role_arn.value // empty' <<<"${terraform_output}")"
+aws_lb_controller_service_account_namespace="$(jq -r '.aws_lb_controller_service_account.value.namespace // empty' <<<"${terraform_output}")"
+aws_lb_controller_service_account_name="$(jq -r '.aws_lb_controller_service_account.value.name // empty' <<<"${terraform_output}")"
+grafana_service_account_namespace="$(jq -r '.grafana_service_account.value.namespace // empty' <<<"${terraform_output}")"
+grafana_service_account_name="$(jq -r '.grafana_service_account.value.name // empty' <<<"${terraform_output}")"
+admin_ui_domain_name="$(jq -r '.admin_ui_domain_name.value // empty' <<<"${terraform_output}")"
+admin_ui_argocd_host="$(jq -r '.admin_ui_argocd_host.value // empty' <<<"${terraform_output}")"
+admin_ui_grafana_host="$(jq -r '.admin_ui_grafana_host.value // empty' <<<"${terraform_output}")"
+admin_ui_route53_zone_id="$(jq -r '.admin_ui_route53_zone_id.value // empty' <<<"${terraform_output}")"
+admin_ui_certificate_arn="$(jq -r '.admin_ui_certificate_arn.value // empty' <<<"${terraform_output}")"
+
+if [[ -z "${cluster_name}" || -z "${aws_region}" ]]; then
+  if [[ "${HUB_EKS_ALLOW_DEFAULTS:-false}" == "true" ]]; then
+    cluster_name="${EKS_CLUSTER_NAME:-${AEGIS_HUB_CLUSTER_NAME}}"
+    aws_region="${AWS_REGION:-${AEGIS_AWS_REGION}}"
+    cluster_endpoint=""
+    update_kubeconfig_command="aws eks update-kubeconfig --region ${aws_region} --name ${cluster_name}"
+  else
+    echo "infra/hub Terraform outputs cluster_name and aws_region are required; run infra/hub terraform apply first" >&2
+    exit 1
+  fi
+fi
+
+jq -n \
+  --arg cluster_name "${cluster_name}" \
+  --arg aws_region "${aws_region}" \
+  --arg cluster_endpoint "${cluster_endpoint}" \
+  --arg update_kubeconfig_command "${update_kubeconfig_command}" \
+  --arg vpc_id "${vpc_id}" \
+  --arg risk_normalizer_irsa_role_arn "${risk_normalizer_irsa_role_arn}" \
+  --arg risk_normalizer_service_account_namespace "${risk_normalizer_service_account_namespace}" \
+  --arg risk_normalizer_service_account_name "${risk_normalizer_service_account_name}" \
+  --arg aws_lb_controller_irsa_role_arn "${aws_lb_controller_irsa_role_arn}" \
+  --arg aws_lb_controller_service_account_namespace "${aws_lb_controller_service_account_namespace}" \
+  --arg aws_lb_controller_service_account_name "${aws_lb_controller_service_account_name}" \
+  --arg grafana_service_account_namespace "${grafana_service_account_namespace}" \
+  --arg grafana_service_account_name "${grafana_service_account_name}" \
+  --arg admin_ui_domain_name "${admin_ui_domain_name}" \
+  --arg admin_ui_argocd_host "${admin_ui_argocd_host}" \
+  --arg admin_ui_grafana_host "${admin_ui_grafana_host}" \
+  --arg admin_ui_route53_zone_id "${admin_ui_route53_zone_id}" \
+  --arg admin_ui_certificate_arn "${admin_ui_certificate_arn}" \
+  '{
+    hub_eks: {
+      hosts: ["localhost"],
+      vars: {
+        ansible_connection: "local",
+        eks_cluster_name: $cluster_name,
+        aws_region: $aws_region,
+        eks_cluster_endpoint: $cluster_endpoint,
+        update_kubeconfig_command: $update_kubeconfig_command,
+        vpc_id: $vpc_id,
+        risk_normalizer_irsa_role_arn: $risk_normalizer_irsa_role_arn,
+        risk_normalizer_service_account_namespace: $risk_normalizer_service_account_namespace,
+        risk_normalizer_service_account_name: $risk_normalizer_service_account_name,
+        aws_lb_controller_irsa_role_arn: $aws_lb_controller_irsa_role_arn,
+        aws_lb_controller_service_account_namespace: $aws_lb_controller_service_account_namespace,
+        aws_lb_controller_service_account_name: $aws_lb_controller_service_account_name,
+        grafana_service_account_namespace: $grafana_service_account_namespace,
+        grafana_service_account_name: $grafana_service_account_name,
+        admin_ui_domain_name: $admin_ui_domain_name,
+        admin_ui_argocd_host: $admin_ui_argocd_host,
+        admin_ui_grafana_host: $admin_ui_grafana_host,
+        admin_ui_route53_zone_id: $admin_ui_route53_zone_id,
+        admin_ui_certificate_arn: $admin_ui_certificate_arn
+      }
+    },
+    _meta: {
+      hostvars: {
+        localhost: {
+          ansible_connection: "local"
+        }
+      }
+    }
+  }'

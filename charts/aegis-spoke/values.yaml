@@ -1,0 +1,117 @@
+factory:
+  id: factory-a
+  environmentType: physical-rpi
+  inputModuleType: sensor
+
+namespaceOverride: ""
+
+serviceAccount:
+  create: true
+  name: aegis-spoke-data-plane
+
+imagePullSecrets: []
+
+podSecurityContext:
+  fsGroup: 10001
+
+outbox:
+  path: /var/lib/aegis/outbox
+  storage:
+    size: 1Gi
+    accessModes:
+      - ReadWriteOnce
+    storageClassName: ""
+
+placement:
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+factoryALogAdapter:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: ""
+    tag: latest
+    pullPolicy: IfNotPresent
+  influxdb:
+    url: http://influxdb-svc.monitoring.svc.cluster.local:8086
+    database: safe_edge_db
+  prometheus:
+    url: http://prometheus-svc.monitoring.svc.cluster.local:9090
+  intervals:
+    factoryStateSeconds: 3
+    infraStateSeconds: 20
+    factoryStateWindowSeconds: 3
+  fallbackSampleLimit: 5
+  workloads:
+    - monitoring/bme280-sensor
+    - ai-apps/safe-edge-integrated-ai
+    - ai-apps/safe-edge-audio
+    - monitoring/influxdb
+    - monitoring/prometheus
+    - monitoring/grafana
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+edgeIotPublisher:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: ""
+    tag: latest
+    pullPolicy: IfNotPresent
+  iot:
+    endpoint: ""
+    endpointKey: endpoint.txt
+    port: 8883
+    clientId: ""
+    secretName: aws-iot-factory-a-cert
+    mountPath: /etc/aegis/iot
+    caFile: AmazonRootCA1.pem
+    certFile: certificate.pem.crt
+    keyFile: private.pem.key
+    timeoutSeconds: 10
+  backoff:
+    seconds: 5
+    maxSeconds: 60
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+snapshotUploader:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: ""
+    tag: latest
+    pullPolicy: IfNotPresent
+  snapshotDir:
+    hostPath: /var/lib/safe-edge/snapshots
+    mountPath: /var/lib/safe-edge/snapshots
+  presign:
+    endpoint: ""
+    token: ""
+    secretName: snapshot-uploader-presign
+    endpointKey: endpoint
+    tokenKey: token
+  statePath: /var/lib/aegis/outbox/.snapshot-uploader-state.json
+  scanIntervalSeconds: 10
+  maxFileBytes: 5242880
+  nodeSelector: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi

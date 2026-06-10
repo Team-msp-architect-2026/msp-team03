@@ -1,0 +1,54 @@
+factory:
+  id: factory-a
+  environmentType: physical-rpi
+  inputModuleType: sensor
+
+namespaceOverride: ai-apps
+
+imagePullSecrets:
+  - name: ecr-registry
+
+outbox:
+  path: /var/lib/aegis/outbox
+  storage:
+    size: 1Gi
+    accessModes:
+      - ReadWriteOnce
+    storageClassName: longhorn
+
+placement:
+  nodeSelector:
+    kubernetes.io/hostname: worker2
+
+factoryALogAdapter:
+  enabled: true
+  image:
+    repository: 611058323802.dkr.ecr.ap-south-1.amazonaws.com/aegis/factory-a-log-adapter
+    tag: main
+    pullPolicy: Always
+  influxdb:
+    url: http://influxdb-svc.monitoring.svc.cluster.local:8086
+    database: safe_edge_db
+  prometheus:
+    url: http://prometheus-svc.monitoring.svc.cluster.local:9090
+
+edgeIotPublisher:
+  enabled: true
+  image:
+    repository: 611058323802.dkr.ecr.ap-south-1.amazonaws.com/aegis/edge-iot-publisher
+    tag: sha-6d30ef2
+  iot:
+    secretName: aws-iot-factory-a-cert
+
+snapshotUploader:
+  enabled: true
+  image:
+    repository: 611058323802.dkr.ecr.ap-south-1.amazonaws.com/aegis/snapshot-uploader
+    tag: sha-6d30ef2
+    pullPolicy: Always
+  presign:
+    secretName: snapshot-uploader-presign
+    endpointKey: endpoint
+    tokenKey: token
+  nodeSelector:
+    kubernetes.io/hostname: worker2

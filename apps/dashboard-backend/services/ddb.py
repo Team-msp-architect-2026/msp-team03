@@ -1,0 +1,681 @@
+"""DynamoDB access layer for AEGIS-DynamoDB-FactoryStatus.
+
+Key contract (ADR 0022 / ADR 0025):
+  table       : AEGIS-DynamoDB-FactoryStatus
+  LATEST      : pk=FACTORY#{factory_id}  sk=LATEST
+  HISTORY_RAW : pk=FACTORY#{factory_id}  sk=HISTORY#STATE#{iso_timestamp}  TTL 2h
+  GRAPH_5M    : pk=FACTORY#{factory_id}  sk=GRAPH#5M#{bucket_start_iso}    TTL 48h
+
+window<=1h → HISTORY#STATE# query (raw snapshots, capped by API limit)
+window>1h  → GRAPH#5M# query (5-minute aggregates, max 288 items for 24h)
+Only these two prefixes are queried.  No other HISTORY# or GRAPH# prefix is allowed.
+"""
+import asyncio
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from functools import lru_cache
+
+import boto3
+from boto3.dynamodb.conditions import Attr, Key
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
+
+from config import get_settings
+
+LATEST_SK = "LATEST"
+HISTORY_STATE_PREFIX = "HISTORY#STATE#"
+GRAPH_5M_PREFIX = "GRAPH#5M#"
+CLOUD_INFRA_PK = "CLOUD#infra"
+CLOUD_INFRA_HISTORY_PREFIXES = {
+    "fast": "HISTORY#FAST#",
+    "slow": "HISTORY#SLOW#",
+}
+MAX_BATCH_GET_KEYS = 100
+_ddb_semaphore: asyncio.Semaphore | None = None
+_ddb_semaphore_limit: int | None = None
+
+
+# ─── Internal helpers ─────────────────────────────────────────────────────────
+
+
+class DynamoDBUnavailableError(RuntimeError):
+    """Raised when DynamoDB cannot answer within the API budget."""
+
+
+@lru_cache(maxsize=8)
+def _ddb_resource(
+    region_name: str,
+    connect_timeout: float,
+    read_timeout: float,
+    max_attempts: int,
+    max_pool_connections: int,
+):
+    return boto3.resource(
+        "dynamodb",
+        region_name=region_name,
+        config=Config(
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
+            retries={"total_max_attempts": max_attempts, "mode": "standard"},
+            max_pool_connections=max_pool_connections,
+        ),
+    )
+
+
+def _ddb():
+    s = get_settings()
+    return _ddb_resource(
+        s.aws_region,
+        s.ddb_connect_timeout_seconds,
+        s.ddb_read_timeout_seconds,
+        s.ddb_max_attempts,
+        s.ddb_max_pool_connections,
+    )
+
+
+def _operation_semaphore() -> asyncio.Semaphore:
+    global _ddb_semaphore, _ddb_semaphore_limit
+    limit = get_settings().ddb_max_concurrent_operations
+    if _ddb_semaphore is None or _ddb_semaphore_limit != limit:
+        _ddb_semaphore = asyncio.Semaphore(limit)
+        _ddb_semaphore_limit = limit
+    return _ddb_semaphore
+
+
+async def _run_ddb_in_thread(func, *args):
+    async with _operation_semaphore():
+        return await asyncio.to_thread(func, *args)
+
+
+async def _run_ddb(func, *args):
+    timeout = get_settings().ddb_operation_timeout_seconds
+    try:
+        return await asyncio.wait_for(_run_ddb_in_thread(func, *args), timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise DynamoDBUnavailableError("DynamoDB operation timed out") from exc
+    except (BotoCoreError, ClientError) as exc:
+        raise DynamoDBUnavailableError("DynamoDB operation failed") from exc
+
+
+def _from_ddb(obj):
+    """Recursively convert DynamoDB Decimal to int/float for JSON serialization."""
+    if isinstance(obj, Decimal):
+        return int(obj) if obj == obj.to_integral_value() else float(obj)
+    if isinstance(obj, dict):
+        return {k: _from_ddb(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_from_ddb(v) for v in obj]
+    return obj
+
+
+def _number_or_none(value) -> float | None:
+    """Convert API numeric fields to finite floats, dropping invalid values."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float, Decimal)):
+        result = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            result = float(text)
+        except ValueError:
+            return None
+    else:
+        return None
+    return result if result == result and result not in (float("inf"), float("-inf")) else None
+
+
+def _count_or_none(value) -> int | None:
+    number = _number_or_none(value)
+    return int(number) if number is not None else None
+
+
+def _factory_ids() -> list[str]:
+    configured = get_settings().dashboard_factory_ids
+    return [factory_id.strip() for factory_id in configured.split(",") if factory_id.strip()]
+
+
+# ─── Synchronous DDB calls (run via asyncio.to_thread) ───────────────────────
+
+def _get_latest_sync(table_name: str, factory_id: str) -> dict | None:
+    table = _ddb().Table(table_name)
+    resp = table.get_item(Key={"pk": f"FACTORY#{factory_id}", "sk": LATEST_SK})
+    item = resp.get("Item")
+    return _from_ddb(item) if item else None
+
+
+def _get_cloud_infra_latest_sync(table_name: str) -> dict | None:
+    table = _ddb().Table(table_name)
+    resp = table.get_item(Key={"pk": CLOUD_INFRA_PK, "sk": LATEST_SK})
+    item = resp.get("Item")
+    return _from_ddb(item) if item else None
+
+
+def _list_factories_sync(table_name: str, factory_ids: list[str]) -> list[dict]:
+    if not factory_ids:
+        return []
+    keys = [{"pk": f"FACTORY#{factory_id}", "sk": LATEST_SK} for factory_id in factory_ids]
+    client = _ddb().meta.client
+    items: list = []
+    for offset in range(0, len(keys), MAX_BATCH_GET_KEYS):
+        request_items = {table_name: {"Keys": keys[offset : offset + MAX_BATCH_GET_KEYS]}}
+        while request_items:
+            resp = client.batch_get_item(RequestItems=request_items)
+            items.extend(resp.get("Responses", {}).get(table_name, []))
+            request_items = resp.get("UnprocessedKeys", {})
+
+    return [_from_ddb(i) for i in items]
+
+
+def _list_factories_by_scan_sync(table_name: str, limit: int) -> list[dict]:
+    table = _ddb().Table(table_name)
+    kwargs: dict = {
+        "FilterExpression": Attr("sk").eq(LATEST_SK),
+        "Limit": 100,
+    }
+    items: list = []
+    while True:
+        resp = table.scan(**kwargs)
+        items.extend(resp.get("Items", []))
+        if len(items) >= limit or "LastEvaluatedKey" not in resp:
+            break
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+    converted = [_from_ddb(i) for i in items[:limit]]
+    return sorted(
+        converted,
+        key=lambda item: str(item.get("factory_id") or item.get("pk", "")),
+    )
+
+
+def _get_graph_5m_sync(
+    table_name: str, factory_id: str, since_sk: str, until_sk: str | None = None
+) -> list[dict]:
+    """Query GRAPH#5M items ascending for a factory (max 288 items for 24h window)."""
+    table = _ddb().Table(table_name)
+    kwargs: dict = dict(
+        KeyConditionExpression=(
+            Key("pk").eq(f"FACTORY#{factory_id}")
+            & Key("sk").between(since_sk, until_sk or f"{GRAPH_5M_PREFIX}~")
+        ),
+        ScanIndexForward=True,
+    )
+    items: list = []
+    while True:
+        resp = table.query(**kwargs)
+        items.extend(resp.get("Items", []))
+        if "LastEvaluatedKey" not in resp:
+            break
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    return [_from_ddb(i) for i in items]
+
+
+def _get_history_sync(
+    table_name: str,
+    factory_id: str,
+    since_sk: str,
+    max_items: int = 500,
+    until_sk: str | None = None,
+) -> list[dict]:
+    """Query HISTORY#STATE items up to max_items.
+
+    Open-ended history windows use newest-first so the cap returns recent data.
+    Bounded chat windows use ascending order and an upper sk bound, otherwise
+    the newest-first cap can be consumed by samples after the requested end.
+    """
+    page_size = min(300, max_items)
+    table = _ddb().Table(table_name)
+    kwargs: dict = dict(
+        KeyConditionExpression=(
+            Key("pk").eq(f"FACTORY#{factory_id}")
+            & Key("sk").between(since_sk, until_sk or f"{HISTORY_STATE_PREFIX}~")
+        ),
+        ScanIndexForward=bool(until_sk),
+        Limit=page_size,
+    )
+    items: list = []
+    while True:
+        resp = table.query(**kwargs)
+        items.extend(resp.get("Items", []))
+        if len(items) >= max_items or "LastEvaluatedKey" not in resp:
+            break
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+    converted = [_from_ddb(i) for i in items[:max_items]]
+    return converted if until_sk else list(reversed(converted))
+
+
+def _get_cloud_infra_history_sync(
+    table_name: str,
+    track: str,
+    since_sk: str,
+    max_items: int = 500,
+) -> list[dict]:
+    prefix = CLOUD_INFRA_HISTORY_PREFIXES[track]
+    page_size = min(300, max_items)
+    table = _ddb().Table(table_name)
+    kwargs: dict = dict(
+        KeyConditionExpression=(
+            Key("pk").eq(CLOUD_INFRA_PK)
+            & Key("sk").between(since_sk, f"{prefix}~")
+        ),
+        ScanIndexForward=False,
+        Limit=page_size,
+    )
+    items: list = []
+    while True:
+        resp = table.query(**kwargs)
+        items.extend(resp.get("Items", []))
+        if len(items) >= max_items or "LastEvaluatedKey" not in resp:
+            break
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+    return [_from_ddb(i) for i in reversed(items[:max_items])]
+
+
+# ─── Public async interface ───────────────────────────────────────────────────
+
+async def get_factory_latest(factory_id: str) -> dict | None:
+    table_name = get_settings().ddb_table_status
+    return await _run_ddb(_get_latest_sync, table_name, factory_id)
+
+
+async def get_cloud_infra_latest() -> dict | None:
+    table_name = get_settings().ddb_table_status
+    return await _run_ddb(_get_cloud_infra_latest_sync, table_name)
+
+
+async def list_factories() -> list[dict]:
+    table_name = get_settings().ddb_table_status
+    settings = get_settings()
+    if settings.dashboard_factory_discovery_mode == "scan_latest":
+        return await _run_ddb(
+            _list_factories_by_scan_sync,
+            table_name,
+            settings.dashboard_factory_scan_limit,
+        )
+    return await _run_ddb(_list_factories_sync, table_name, _factory_ids())
+
+
+async def get_factory_history(
+    factory_id: str,
+    window: str = "1h",
+    max_items: int = 500,
+    since: str | None = None,
+    until: str | None = None,
+) -> list[dict]:
+    """Return history items for chart consumption.
+
+    window<=1h → HISTORY#STATE# raw snapshots
+    window=6h  → GRAPH#5M# 5-min buckets (up to 72 pts)
+    window=12h → GRAPH#5M# re-aggregated to 10-min buckets (2×5min, up to 72 pts)
+    window=24h → GRAPH#5M# re-aggregated to 20-min buckets (4×5min, up to 72 pts)
+    """
+    table_name = get_settings().ddb_table_status
+    query_since = since or _since_iso(window)
+
+    if _parse_window(window) <= timedelta(hours=1):
+        since_sk = f"{HISTORY_STATE_PREFIX}{query_since}"
+        until_sk = f"{HISTORY_STATE_PREFIX}{until}" if until else None
+        raw = await _run_ddb(_get_history_sync, table_name, factory_id, since_sk, max_items, until_sk)
+        extracted = [_extract(i) for i in raw]
+        extracted = _filter_after_since(extracted, since) if since else extracted
+        return _filter_before_until(extracted, until) if until else extracted
+
+    since_sk = f"{GRAPH_5M_PREFIX}{query_since}"
+    until_sk = f"{GRAPH_5M_PREFIX}{until}" if until else None
+    raw = await _run_ddb(_get_graph_5m_sync, table_name, factory_id, since_sk, until_sk)
+    extracted = [_extract_graph_5m(i) for i in raw]
+    n = _bucket_size_for_window(window)
+    result = _reaggregate_extracted(extracted, n) if n > 1 else extracted
+    result = _filter_after_since(result, since) if since else result
+    return _filter_before_until(result, until) if until else result
+
+
+async def get_cloud_infra_history(
+    window: str = "1h",
+    track: str = "fast",
+    max_items: int = 500,
+) -> list[dict]:
+    table_name = get_settings().ddb_table_status
+    prefix = CLOUD_INFRA_HISTORY_PREFIXES[track]
+    since_sk = f"{prefix}{_since_iso(window)}"
+    return await _run_ddb(
+        _get_cloud_infra_history_sync,
+        table_name,
+        track,
+        since_sk,
+        max_items,
+    )
+
+
+# ─── Private utilities ────────────────────────────────────────────────────────
+
+def _extract_infra_nodes_mean(infra: dict) -> list[dict] | None:
+    """Extract per-node mean values from GRAPH#5M infra.nodes list.
+
+    Each node entry: {node_id, cpu_usage_percent: {mean}, memory_usage_percent: {mean},
+                      disk_usage_percent: {last|mean}}
+    Returns a flat list consumable by the frontend NodeResourceChart.
+    """
+    raw_nodes = infra.get("nodes") or []
+    result = []
+    for n in raw_nodes:
+        node_id = n.get("node_id") or n.get("name")
+        if not node_id:
+            continue
+        cpu_field = n.get("cpu_usage_percent") or {}
+        mem_field = n.get("memory_usage_percent") or {}
+        disk_field = n.get("disk_usage_percent") or {}
+        result.append({
+            "node_id": node_id,
+            "cpu_usage_percent": _number_or_none(cpu_field.get("mean") if isinstance(cpu_field, dict) else cpu_field),
+            "memory_usage_percent": _number_or_none(mem_field.get("mean") if isinstance(mem_field, dict) else mem_field),
+            "disk_usage_percent": (
+                _number_or_none(disk_field.get("last") or disk_field.get("mean"))
+                if isinstance(disk_field, dict) else _number_or_none(disk_field)
+            ),
+        })
+    return result if result else None
+
+
+def _merge_nodes_mean(group: list[dict]) -> list[dict] | None:
+    """Merge per-node mean values across a group of extracted GRAPH#5M buckets.
+
+    For each node_id: simple average of cpu/memory means, last value for disk.
+    """
+    node_buckets: dict[str, list[dict]] = {}
+    for g in group:
+        for n in g.get("nodes_mean") or []:
+            nid = n.get("node_id")
+            if nid:
+                node_buckets.setdefault(nid, []).append(n)
+    if not node_buckets:
+        return None
+    result = []
+    for nid, entries in node_buckets.items():
+        cpu_vals = [e["cpu_usage_percent"] for e in entries if e.get("cpu_usage_percent") is not None]
+        mem_vals = [e["memory_usage_percent"] for e in entries if e.get("memory_usage_percent") is not None]
+        disk_vals = [e["disk_usage_percent"] for e in entries if e.get("disk_usage_percent") is not None]
+        result.append({
+            "node_id": nid,
+            "cpu_usage_percent": sum(cpu_vals) / len(cpu_vals) if cpu_vals else None,
+            "memory_usage_percent": sum(mem_vals) / len(mem_vals) if mem_vals else None,
+            "disk_usage_percent": disk_vals[-1] if disk_vals else None,
+        })
+    return result if result else None
+
+
+def _extract_graph_5m(item: dict) -> dict:
+    """Extract aggregated metrics from a GRAPH#5M bucket item for frontend charts.
+
+    Follows the field mapping defined in example_data.md / ADR 0025:
+      sensor.*   → temperature_celsius_avg/min/max, humidity_percent_avg/min/max,
+                   pressure_hpa_avg/min/max
+      risk.score → risk_score (mean) / risk_score_avg / risk_score_min / risk_score_max
+      ai_detection.by_type.*.max → fire_score / fall_score / bend_score
+      infra.*    → cpu_usage_percent_mean / memory_usage_percent_mean / disk_usage_percent_last
+      infra.nodes → nodes_mean (per-node mean, when available)
+    """
+    bucket_start = item.get("bucket_start", "")
+    sk = item.get("sk", "")
+
+    sensor = item.get("sensor") or {}
+    risk = item.get("risk") or {}
+    ai = item.get("ai_detection") or {}
+    infra = item.get("infra") or {}
+    quality = item.get("quality") or {}
+
+    temp = sensor.get("temperature_celsius") or {}
+    humidity = sensor.get("humidity_percent") or {}
+    pressure = sensor.get("pressure_hpa") or {}
+    risk_score = risk.get("score") or {}
+    ai_by_type = ai.get("by_type") or {}
+    cpu = infra.get("cpu_usage_percent") or {}
+    memory = infra.get("memory_usage_percent") or {}
+    disk = infra.get("disk_usage_percent") or {}
+
+    risk_mean = risk_score.get("mean")
+    risk_min = risk_score.get("min")
+    risk_max = risk_score.get("max")
+    source_count = _count_or_none(quality.get("source_count"))
+    sample_count = source_count if source_count is not None else _count_or_none(risk_score.get("count"))
+    is_empty_bucket = sample_count == 0
+
+    ai_fire = ai_by_type.get("fire_score") or {}
+    ai_fall = ai_by_type.get("fall_score") or {}
+    ai_bend = ai_by_type.get("bend_score") or {}
+
+    return {
+        "timestamp": bucket_start or sk.removeprefix(GRAPH_5M_PREFIX),
+        "bucket_start": bucket_start,
+        "bucket_end": item.get("bucket_end"),
+        "bucket_minutes": 5,
+        "is_bucket": True,
+        "sample_count": sample_count,
+        # risk
+        "risk_score": None if is_empty_bucket else _number_or_none(risk_mean),
+        "risk_score_avg": None if is_empty_bucket else _number_or_none(risk_mean),
+        "risk_score_min": None if is_empty_bucket else _number_or_none(risk_min),
+        "risk_score_max": None if is_empty_bucket else _number_or_none(risk_max),
+        # sensor avg
+        "temperature_celsius_avg": _number_or_none(temp.get("mean")),
+        "humidity_percent_avg": _number_or_none(humidity.get("mean")),
+        "pressure_hpa_avg": _number_or_none(pressure.get("mean")),
+        # sensor min/max (for range/volatility bands in charts)
+        "temperature_celsius_min": _number_or_none(temp.get("min")),
+        "humidity_percent_min": _number_or_none(humidity.get("min")),
+        "pressure_hpa_min": _number_or_none(pressure.get("min")),
+        "temperature_celsius_max": _number_or_none(temp.get("max")),
+        "humidity_percent_max": _number_or_none(humidity.get("max")),
+        "pressure_hpa_max": _number_or_none(pressure.get("max")),
+        # AI — mean for line chart, max for spike markers (≥0.8)
+        "fire_score": _number_or_none(ai_fire.get("mean")),
+        "fall_score": _number_or_none(ai_fall.get("mean")),
+        "bend_score": _number_or_none(ai_bend.get("mean")),
+        "fire_score_max": _number_or_none(ai_fire.get("max")),
+        "fall_score_max": _number_or_none(ai_fall.get("max")),
+        "bend_score_max": _number_or_none(ai_bend.get("max")),
+        "ai_max_score": _number_or_none(ai.get("max_score")),
+        # infra aggregates
+        "cpu_usage_percent_mean": _number_or_none(cpu.get("mean")),
+        "memory_usage_percent_mean": _number_or_none(memory.get("mean")),
+        "disk_usage_percent_last": _number_or_none(disk.get("last")),
+        # per-node means (when aggregator writes infra.nodes)
+        "nodes_mean": _extract_infra_nodes_mean(infra),
+        "quality": quality if quality else None,
+    }
+
+
+def _bucket_size_for_window(window: str) -> int:
+    """Number of 5-min GRAPH#5M items to merge per output bucket.
+
+    6h  → 1 (no merge, 72 pts at 5-min)
+    12h → 2 (10-min buckets, 72 pts)
+    24h → 4 (20-min buckets, 72 pts)
+    """
+    return {"12h": 2, "24h": 4}.get(window, 1)
+
+
+def _reaggregate_extracted(items: list[dict], n: int) -> list[dict]:
+    """Group consecutive extracted GRAPH#5M items into n-wide merged buckets."""
+    return [
+        _merge_extracted_group(items[i : i + n], n)
+        for i in range(0, len(items), n)
+        if items[i : i + n]
+    ]
+
+
+def _merge_extracted_group(group: list[dict], n: int) -> dict:
+    """Merge a group of extracted GRAPH#5M items into one bucket.
+
+    - avg fields: weighted average by sample_count
+    - min fields: min(min)
+    - max fields: max(max)
+    - risk_score_min: min(min)  — worst dip in the window
+    - risk_score_max: max(max)
+    - sample_count: sum
+    - disk_usage_percent_last: last bucket's value
+    """
+    first, last = group[0], group[-1]
+
+    def _wavg(field: str) -> float | None:
+        values = [
+            (_number_or_none(g.get(field)), _count_or_none(g.get("sample_count")) or 0)
+            for g in group
+            if _number_or_none(g.get(field)) is not None and (_count_or_none(g.get("sample_count")) or 0) > 0
+        ]
+        total = sum(sample_count for _, sample_count in values)
+        if not total:
+            return None
+        return sum(value * sample_count for value, sample_count in values) / total
+
+    def _fmax(field: str) -> float | None:
+        vals = [_number_or_none(g.get(field)) for g in group if _number_or_none(g.get(field)) is not None]
+        return max(vals) if vals else None
+
+    def _fmin(field: str) -> float | None:
+        vals = [_number_or_none(g.get(field)) for g in group if _number_or_none(g.get(field)) is not None]
+        return min(vals) if vals else None
+
+    def _fsum(field: str) -> int | None:
+        vals = [_count_or_none(g.get(field)) for g in group if _count_or_none(g.get(field)) is not None]
+        return sum(vals) if vals else None
+
+    risk_avg = _wavg("risk_score_avg")
+    return {
+        "timestamp": first.get("timestamp"),
+        "bucket_start": first.get("bucket_start"),
+        "bucket_end": last.get("bucket_end"),
+        "bucket_minutes": 5 * n,
+        "is_bucket": True,
+        "sample_count": _fsum("sample_count"),
+        # risk
+        "risk_score": risk_avg,
+        "risk_score_avg": risk_avg,
+        "risk_score_min": _fmin("risk_score_min"),
+        "risk_score_max": _fmax("risk_score_max"),
+        # sensor avg (weighted)
+        "temperature_celsius_avg": _wavg("temperature_celsius_avg"),
+        "humidity_percent_avg": _wavg("humidity_percent_avg"),
+        "pressure_hpa_avg": _wavg("pressure_hpa_avg"),
+        # sensor min/max
+        "temperature_celsius_min": _fmin("temperature_celsius_min"),
+        "humidity_percent_min": _fmin("humidity_percent_min"),
+        "pressure_hpa_min": _fmin("pressure_hpa_min"),
+        "temperature_celsius_max": _fmax("temperature_celsius_max"),
+        "humidity_percent_max": _fmax("humidity_percent_max"),
+        "pressure_hpa_max": _fmax("pressure_hpa_max"),
+        # AI scores
+        "fire_score": _wavg("fire_score"),
+        "fall_score": _wavg("fall_score"),
+        "bend_score": _wavg("bend_score"),
+        "fire_score_max": _fmax("fire_score_max"),
+        "fall_score_max": _fmax("fall_score_max"),
+        "bend_score_max": _fmax("bend_score_max"),
+        "ai_max_score": _fmax("ai_max_score"),
+        # infra
+        "cpu_usage_percent_mean": _wavg("cpu_usage_percent_mean"),
+        "memory_usage_percent_mean": _wavg("memory_usage_percent_mean"),
+        "disk_usage_percent_last": last.get("disk_usage_percent_last"),
+        "nodes_mean": _merge_nodes_mean(group),
+        "quality": None,
+    }
+
+
+def _parse_window(window: str) -> timedelta:
+    if window.endswith("h"):
+        return timedelta(hours=int(window[:-1]))
+    if window.endswith("m"):
+        return timedelta(minutes=int(window[:-1]))
+    if window.endswith("d"):
+        return timedelta(days=int(window[:-1]))
+    return timedelta(hours=1)
+
+
+def _since_iso(window: str) -> str:
+    dt = datetime.now(timezone.utc) - _parse_window(window)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _filter_after_since(items: list[dict], since: str | None) -> list[dict]:
+    if not since:
+        return items
+    return [item for item in items if str(item.get("timestamp") or "") > since]
+
+
+def _filter_before_until(items: list[dict], until: str | None) -> list[dict]:
+    if not until:
+        return items
+    return [item for item in items if str(item.get("timestamp") or "") <= until]
+
+
+def _coalesce_fs(fs: dict, *dot_paths: str):
+    """Return first non-None value from fs using dot-notation paths."""
+    for path in dot_paths:
+        v: object = fs
+        for key in path.split("."):
+            if not isinstance(v, dict):
+                v = None
+                break
+            v = v.get(key)
+        if v is not None:
+            return v
+    return None
+
+
+def _coalesce_fs_number(fs: dict, *dot_paths: str) -> float | None:
+    return _number_or_none(_coalesce_fs(fs, *dot_paths))
+
+
+def _extract(item: dict) -> dict:
+    """Extract risk / factory_state / infra_state from a HISTORY#STATE item
+    and also promote flat fields for chart consumption.
+
+    Handles both flat DDB format (factory_state.temperature_celsius) and
+    nested format (factory_state.sensor.temperature_celsius_avg / factory_state.temperature_celsius_avg).
+    The sk format is HISTORY#STATE#{iso_timestamp}.  No other HISTORY# prefix
+    is queried or produced by this function.
+    """
+    sk = item.get("sk", "")
+    timestamp = sk.removeprefix(HISTORY_STATE_PREFIX) or item.get("updated_at", "")
+
+    risk = item.get("risk") or {}
+    fs = item.get("factory_state") or {}
+    infra = item.get("infra_state") or {}
+
+    # data-processor writes {"field": ...}; test fixtures use {"name": ...} — handle both.
+    top_cause_names = [
+        (c.get("name") or c.get("field") if isinstance(c, dict) else str(c))
+        for c in (risk.get("top_causes") or [])
+    ]
+
+    return {
+        "timestamp": timestamp,
+        "risk": risk if risk else None,
+        "factory_state": fs if fs else None,
+        "infra_state": infra if infra else None,
+        # ── flattened risk ───────────────────────────────────────────────
+        "risk_score": _number_or_none(risk.get("score")),
+        "risk_level": risk.get("level"),
+        "top_cause_names": top_cause_names,
+        # ── flattened sensor (flat / avg / sensor.* nested) ──────────────
+        "temperature_celsius_avg": _coalesce_fs_number(
+            fs, "temperature_celsius", "temperature_celsius_avg", "sensor.temperature_celsius_avg"
+        ),
+        "humidity_percent_avg": _coalesce_fs_number(
+            fs, "humidity_percent", "humidity_percent_avg", "sensor.humidity_percent_avg"
+        ),
+        "pressure_hpa_avg": _coalesce_fs_number(
+            fs, "pressure_hpa", "pressure_hpa_avg", "sensor.pressure_hpa_avg"
+        ),
+        # ── flattened AI scores (flat / ai_result.* nested) ──────────────
+        "fire_score": _coalesce_fs_number(fs, "fire_score", "ai_result.fire_score"),
+        "fall_score": _coalesce_fs_number(fs, "fall_score", "ai_result.fall_score"),
+        "bend_score": _coalesce_fs_number(fs, "bend_score", "ai_result.bend_score"),
+        # ── infra (for NodeResourceChart) ────────────────────────────────
+        "node_summary": infra.get("node_summary"),
+        "nodes": infra.get("nodes"),
+    }

@@ -1,0 +1,26 @@
+aws_region   = "ap-south-1"
+project_name = "AEGIS"
+environment  = "hub-mvp"
+
+vpc_cidr                   = "10.0.0.0/16"
+availability_zone_suffixes = ["a", "c"]
+
+cluster_name       = "AEGIS-EKS"
+kubernetes_version = "1.34"
+
+# MVP bootstrap default. This allows kubectl access from changing work locations.
+# IAM/MFA still protects the API, but this must be narrowed or moved to private access before operational use.
+cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]
+
+# Start with t3.medium. Change to ["t3.large"] if ArgoCD/Grafana/Risk workloads need more memory.
+node_instance_types = ["t3.medium"]
+node_min_size       = 2
+node_desired_size   = 2
+node_max_size       = 2
+
+# Admin UI host fallback values. Route53 Hosted Zone and ACM certificate live in infra/foundation.
+# The actual Kubernetes Ingress is applied by Ansible only when ADMIN_UI_INGRESS_ENABLED=true
+# after the domain is delegated and ACM is ISSUED.
+admin_ui_domain_name = "minsoo-tech.cloud"
+# admin_ui_argocd_host  = "argocd.minsoo-tech.cloud"
+# admin_ui_grafana_host = "grafana.minsoo-tech.cloud"

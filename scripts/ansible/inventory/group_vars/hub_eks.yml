@@ -1,0 +1,159 @@
+hub_namespaces:
+  - name: argocd
+    component: gitops
+    role: Hub에서 Spoke 배포 제어
+  - name: observability
+    component: observability
+    role: Grafana 관리 UI
+  - name: risk
+    component: risk
+    role: M1 Hub 배포/IRSA 검증용 또는 임시 risk workload. 최신 MVP에서는 별도 Risk 계산 파드를 두지 않음
+  - name: ops-support
+    component: ops-support
+    role: pipeline_status 집계 보조 기능
+
+argocd_namespace: argocd
+argocd_helm_repo_name: argo
+argocd_helm_repo_url: https://argoproj.github.io/argo-helm
+argocd_chart_ref: argo/argo-cd
+argocd_chart_version: 9.5.11
+argocd_release_name: argocd
+argocd_server_service_type: ClusterIP
+argocd_local_port: 8080
+argocd_remote_port: 443
+argocd_print_initial_admin_password: false
+argocd_force_upgrade: false
+
+aws_lb_controller_namespace: kube-system
+aws_lb_controller_helm_repo_name: eks
+aws_lb_controller_helm_repo_url: https://aws.github.io/eks-charts
+aws_lb_controller_chart_ref: eks/aws-load-balancer-controller
+aws_lb_controller_chart_version: 1.14.0
+aws_lb_controller_app_version: v2.14.0
+aws_lb_controller_release_name: aws-load-balancer-controller
+aws_lb_controller_service_account_name: aws-load-balancer-controller
+aws_lb_controller_apply_crds: true
+aws_lb_controller_force_upgrade: false
+
+grafana_namespace: observability
+grafana_helm_repo_name: grafana
+grafana_helm_repo_url: https://grafana.github.io/helm-charts
+grafana_chart_ref: grafana/grafana
+grafana_chart_version: 10.5.15
+grafana_app_version: 12.3.1
+grafana_release_name: grafana
+grafana_service_name: grafana
+grafana_service_type: ClusterIP
+grafana_local_port: 30080
+grafana_remote_port: 80
+grafana_admin_secret_name: grafana-admin
+grafana_apply_on_each_build: true
+grafana_force_upgrade: false
+
+admin_ui_ingress_enabled: "{{ lookup('env', 'ADMIN_UI_INGRESS_ENABLED') | default('false', true) | bool }}"
+admin_ui_group_name: aegis-admin
+admin_ui_load_balancer_name: aegis-admin-ui
+admin_ui_scheme: internet-facing
+admin_ui_target_type: ip
+admin_ui_allowed_cidrs:
+  - 0.0.0.0/0
+admin_ui_tags: "Project=AEGIS,Environment=hub-mvp,Component=hub,ManagedBy=aws-load-balancer-controller"
+admin_ui_argocd_ingress_name: argocd-admin
+admin_ui_grafana_ingress_name: grafana-admin
+admin_ui_argocd_service_name: argocd-server
+admin_ui_grafana_service_name: grafana
+
+tailscale_operator_env_file: "{{ lookup('env', 'AEGIS_TAILSCALE_OPERATOR_ENV') | default(lookup('env', 'HOME') ~ '/Aegis/.aegis/secrets/tailscale/operator.env', true) }}"
+tailscale_namespace: tailscale
+tailscale_helm_repo_name: tailscale
+tailscale_helm_repo_url: https://pkgs.tailscale.com/helmcharts
+tailscale_chart_ref: tailscale/tailscale-operator
+tailscale_chart_version: 1.96.5
+tailscale_release_name: tailscale-operator
+tailscale_operator_force_upgrade: false
+tailscale_ui_enabled: "{{ lookup('env', 'AEGIS_TAILSCALE_UI_ENABLED') | default('true', true) | bool }}"
+tailscale_spoke_registration_enabled: "{{ lookup('env', 'AEGIS_TAILSCALE_SPOKE_REGISTRATION_ENABLED') | default('true', true) | bool }}"
+
+tailscale_factory_a_name: factory-a
+tailscale_factory_a_master_ip: 100.x.x.x
+tailscale_factory_a_kube_tls_server_name: 10.10.10.10
+tailscale_factory_a_direct_kubeconfig: "{{ lookup('env', 'AEGIS_FACTORY_A_DIRECT_KUBECONFIG') | default(lookup('env', 'HOME') ~ '/Aegis/.aegis/secrets/kubeconfig/factory-a.tailscale-ip-tlsname.kubeconfig', true) }}"
+tailscale_factory_a_egress_service_name: factory-a-master-tailnet
+tailscale_factory_a_egress_server: "https://{{ tailscale_factory_a_egress_service_name }}.{{ argocd_namespace }}.svc.cluster.local:6443"
+tailscale_factory_a_argocd_cluster_secret_name: cluster-factory-a
+tailscale_factory_a_argocd_manager_namespace: kube-system
+tailscale_factory_a_argocd_manager_service_account: argocd-manager
+tailscale_factory_a_argocd_manager_token_secret: argocd-manager-long-lived-token
+
+tailscale_factory_b_name: factory-b
+tailscale_factory_b_master_ip: 100.x.x.x
+tailscale_factory_b_kube_tls_server_name: 192.168.x.x
+tailscale_factory_b_direct_kubeconfig: "{{ lookup('env', 'AEGIS_FACTORY_B_DIRECT_KUBECONFIG') | default(lookup('env', 'HOME') ~ '/Aegis/.aegis/secrets/kubeconfig/factory-b.tailscale-ip.kubeconfig', true) }}"
+tailscale_factory_b_egress_service_name: factory-b-master-tailnet
+tailscale_factory_b_egress_server: "https://{{ tailscale_factory_b_egress_service_name }}.{{ argocd_namespace }}.svc.cluster.local:6443"
+tailscale_factory_b_argocd_cluster_secret_name: cluster-factory-b
+tailscale_factory_b_argocd_manager_namespace: kube-system
+tailscale_factory_b_argocd_manager_service_account: argocd-manager
+tailscale_factory_b_argocd_manager_token_secret: argocd-manager-long-lived-token
+
+tailscale_factory_c_name: factory-c
+tailscale_factory_c_master_ip: 100.x.x.x
+tailscale_factory_c_kube_tls_server_name: factory-c-master
+tailscale_factory_c_direct_kubeconfig: "{{ lookup('env', 'AEGIS_FACTORY_C_DIRECT_KUBECONFIG') | default(lookup('env', 'HOME') ~ '/Aegis/.aegis/secrets/kubeconfig/factory-c.tailscale-ip.kubeconfig', true) }}"
+tailscale_factory_c_egress_service_name: factory-c-master-tailnet
+tailscale_factory_c_egress_server: "https://{{ tailscale_factory_c_egress_service_name }}.{{ argocd_namespace }}.svc.cluster.local:6443"
+tailscale_factory_c_argocd_cluster_secret_name: cluster-factory-c
+tailscale_factory_c_argocd_manager_namespace: kube-system
+tailscale_factory_c_argocd_manager_service_account: argocd-manager
+tailscale_factory_c_argocd_manager_token_secret: argocd-manager-long-lived-token
+
+aegis_spokes:
+  - id: factory-a
+    enabled: "{{ lookup('env', 'AEGIS_FACTORY_A_ENABLED') | default('true', true) | bool }}"
+    master_tailnet_ip: "{{ tailscale_factory_a_master_ip }}"
+    kube_tls_server_name: "{{ tailscale_factory_a_kube_tls_server_name }}"
+    direct_kubeconfig: "{{ tailscale_factory_a_direct_kubeconfig }}"
+    egress_service_name: "{{ tailscale_factory_a_egress_service_name }}"
+    egress_server: "{{ tailscale_factory_a_egress_server }}"
+    argocd_cluster_secret_name: "{{ tailscale_factory_a_argocd_cluster_secret_name }}"
+    gitops_application_name: aegis-spoke-factory-a
+    argocd_manager_namespace: "{{ tailscale_factory_a_argocd_manager_namespace }}"
+    argocd_manager_service_account: "{{ tailscale_factory_a_argocd_manager_service_account }}"
+    argocd_manager_token_secret: "{{ tailscale_factory_a_argocd_manager_token_secret }}"
+  - id: factory-b
+    enabled: "{{ lookup('env', 'AEGIS_FACTORY_B_ENABLED') | default('true', true) | bool }}"
+    master_tailnet_ip: "{{ tailscale_factory_b_master_ip }}"
+    kube_tls_server_name: "{{ tailscale_factory_b_kube_tls_server_name }}"
+    direct_kubeconfig: "{{ tailscale_factory_b_direct_kubeconfig }}"
+    egress_service_name: "{{ tailscale_factory_b_egress_service_name }}"
+    egress_server: "{{ tailscale_factory_b_egress_server }}"
+    argocd_cluster_secret_name: "{{ tailscale_factory_b_argocd_cluster_secret_name }}"
+    gitops_application_name: aegis-spoke-factory-b
+    argocd_manager_namespace: "{{ tailscale_factory_b_argocd_manager_namespace }}"
+    argocd_manager_service_account: "{{ tailscale_factory_b_argocd_manager_service_account }}"
+    argocd_manager_token_secret: "{{ tailscale_factory_b_argocd_manager_token_secret }}"
+  - id: factory-c
+    enabled: "{{ lookup('env', 'AEGIS_FACTORY_C_ENABLED') | default('true', true) | bool }}"
+    master_tailnet_ip: "{{ tailscale_factory_c_master_ip }}"
+    kube_tls_server_name: "{{ tailscale_factory_c_kube_tls_server_name }}"
+    direct_kubeconfig: "{{ tailscale_factory_c_direct_kubeconfig }}"
+    egress_service_name: "{{ tailscale_factory_c_egress_service_name }}"
+    egress_server: "{{ tailscale_factory_c_egress_server }}"
+    argocd_cluster_secret_name: "{{ tailscale_factory_c_argocd_cluster_secret_name }}"
+    gitops_application_name: aegis-spoke-factory-c
+    argocd_manager_namespace: "{{ tailscale_factory_c_argocd_manager_namespace }}"
+    argocd_manager_service_account: "{{ tailscale_factory_c_argocd_manager_service_account }}"
+    argocd_manager_token_secret: "{{ tailscale_factory_c_argocd_manager_token_secret }}"
+
+tailscale_argocd_ui_service_name: argocd-server-tailscale
+tailscale_argocd_ui_hostname: argocd-aegis-hub
+tailscale_grafana_ui_service_name: grafana-tailscale
+tailscale_grafana_ui_hostname: grafana-aegis-hub
+
+gitops_repo_url: "{{ lookup('env', 'AEGIS_GITOPS_REPO_URL') | default('https://github.com/aegis-pi/aegis-pi-gitops.git', true) }}"
+gitops_repo_revision: "{{ lookup('env', 'AEGIS_GITOPS_REPO_REVISION') | default('main', true) }}"
+gitops_applicationset_name: aegis-spoke
+gitops_applicationset_values_file_glob: "{{ lookup('env', 'AEGIS_GITOPS_APPSET_VALUES_GLOB') | default('envs/factory-*/values.yaml', true) }}"
+gitops_applicationset_chart_path: charts/aegis-spoke
+gitops_applicationset_destination_namespace: ai-apps
+gitops_factory_a_application_name: aegis-spoke-factory-a

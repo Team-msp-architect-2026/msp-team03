@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/lib/config.sh"
+aegis_load_config "${REPO_ROOT}"
+
+AWS_REGION="${AWS_REGION:-${AEGIS_AWS_REGION}}"
+FACTORY_ID="${FACTORY_ID:-${AEGIS_FACTORY_ID}}"
+THING_NAME="${THING_NAME:-${AEGIS_IOT_THING_NAME_PREFIX}-${FACTORY_ID}}"
+POLICY_NAME="${POLICY_NAME:-${AEGIS_IOT_POLICY_NAME_PREFIX}-${FACTORY_ID}}"
+TOPIC_PREFIX="${TOPIC_PREFIX:-${AEGIS_IOT_TOPIC_ROOT}/${FACTORY_ID}}"
+SECRET_DIR="${SECRET_DIR:-${REPO_ROOT}/secret/iot/${FACTORY_ID}}"
+OTP="${1:-}"
+
+require_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "missing required command: $1" >&2
+    exit 1
+  fi
+}
+
+require_command aws
+require_command jq
+require_command curl
+
+archive_local_certificate_material() {
+  local archive_dir
+  archive_dir="${SECRET_DIR}/stale-$(date +%Y%m%d%H%M%S)"
+
+  mkdir -p "${archive_dir}"
+
+  for file_name in \
+    certificate.pem.crt \
+    public.pem.key \
+    private.pem.key \
+    certificate.json \
+    certificate-arn.txt \
+    certificate-id.txt \
+    AmazonRootCA1.pem \
+    endpoint.txt \
+    registration-summary.txt; do
+    if [[ -f "${SECRET_DIR}/${file_name}" ]]; then
+      mv "${SECRET_DIR}/${file_name}" "${archive_dir}/${file_name}"
+    fi
+  done
+
+  chmod 700 "${archive_dir}"
+  chmod 600 "${archive_dir}"/* 2>/dev/null || true
+  echo "Archived stale local certificate material: ${archive_dir}"
+}
+
+certificate_exists_in_aws() {
+  local certificate_id="$1"
+
+  aws iot describe-certificate \
+    --certificate-id "${certificate_id}" \
+    >/dev/null 2>&1
+}
+
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/lib/aws-mfa.sh"
+AWS_REGION="${AWS_REGION}" aegis_ensure_aws_mfa "${OTP}"
+export AWS_REGION
+export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-${AWS_REGION}}"
+
+mkdir -p "${SECRET_DIR}"
+chmod 700 "${REPO_ROOT}/secret" "${REPO_ROOT}/secret/iot" "${SECRET_DIR}"
+
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+
+if aws iot describe-thing --thing-name "${THING_NAME}" >/dev/null 2>&1; then
+  echo "IoT Thing already exists: ${THING_NAME}"
+else
+  aws iot create-thing \
+    --thing-name "${THING_NAME}" \
+    --attribute-payload "attributes={factory_id=${FACTORY_ID},project=AEGIS}" \
+    >/dev/null
+  echo "Created IoT Thing: ${THING_NAME}"
+fi
+
+cat >"${SECRET_DIR}/iot-policy.json" <<JSON
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["iot:Connect"],
+      "Resource": ["arn:aws:iot:${AWS_REGION}:${ACCOUNT_ID}:client/${THING_NAME}"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["iot:Publish"],
+      "Resource": ["arn:aws:iot:${AWS_REGION}:${ACCOUNT_ID}:topic/${TOPIC_PREFIX}/*"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["iot:Subscribe"],
+      "Resource": ["arn:aws:iot:${AWS_REGION}:${ACCOUNT_ID}:topicfilter/${TOPIC_PREFIX}/*"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["iot:Receive"],
+      "Resource": ["arn:aws:iot:${AWS_REGION}:${ACCOUNT_ID}:topic/${TOPIC_PREFIX}/*"]
+    }
+  ]
+}
+JSON
+
+if aws iot get-policy --policy-name "${POLICY_NAME}" >/dev/null 2>&1; then
+  echo "IoT Policy already exists: ${POLICY_NAME}"
+else
+  aws iot create-policy \
+    --policy-name "${POLICY_NAME}" \
+    --policy-document "file://${SECRET_DIR}/iot-policy.json" \
+    >/dev/null
+  echo "Created IoT Policy: ${POLICY_NAME}"
+fi
+
+CERTIFICATE_ARN=""
+CERTIFICATE_ID=""
+
+if [[ -f "${SECRET_DIR}/certificate-arn.txt" && \
+  -f "${SECRET_DIR}/certificate-id.txt" && \
+  -f "${SECRET_DIR}/certificate.pem.crt" && \
+  -f "${SECRET_DIR}/private.pem.key" ]]; then
+  CERTIFICATE_ARN="$(cat "${SECRET_DIR}/certificate-arn.txt")"
+  CERTIFICATE_ID="$(cat "${SECRET_DIR}/certificate-id.txt")"
+
+  if certificate_exists_in_aws "${CERTIFICATE_ID}"; then
+    CERTIFICATE_STATUS="$(
+      aws iot describe-certificate \
+        --certificate-id "${CERTIFICATE_ID}" \
+        --query certificateDescription.status \
+        --output text
+    )"
+
+    if [[ "${CERTIFICATE_STATUS}" != "ACTIVE" ]]; then
+      aws iot update-certificate \
+        --certificate-id "${CERTIFICATE_ID}" \
+        --new-status ACTIVE \
+        >/dev/null
+      echo "Activated existing IoT certificate: ${CERTIFICATE_ID}"
+    else
+      echo "Reusing existing IoT certificate: ${CERTIFICATE_ID}"
+    fi
+  else
+    echo "Local certificate metadata exists, but AWS IoT certificate is missing."
+    archive_local_certificate_material
+    CERTIFICATE_ARN=""
+    CERTIFICATE_ID=""
+  fi
+elif [[ -f "${SECRET_DIR}/certificate-arn.txt" || \
+  -f "${SECRET_DIR}/certificate-id.txt" || \
+  -f "${SECRET_DIR}/certificate.pem.crt" || \
+  -f "${SECRET_DIR}/private.pem.key" ]]; then
+  echo "Incomplete local certificate material exists in ${SECRET_DIR}."
+  archive_local_certificate_material
+fi
+
+if [[ -z "${CERTIFICATE_ARN}" ]]; then
+  aws iot create-keys-and-certificate \
+    --set-as-active \
+    --certificate-pem-outfile "${SECRET_DIR}/certificate.pem.crt" \
+    --public-key-outfile "${SECRET_DIR}/public.pem.key" \
+    --private-key-outfile "${SECRET_DIR}/private.pem.key" \
+    >"${SECRET_DIR}/certificate.json"
+
+  jq -r '.certificateArn' "${SECRET_DIR}/certificate.json" >"${SECRET_DIR}/certificate-arn.txt"
+  jq -r '.certificateId' "${SECRET_DIR}/certificate.json" >"${SECRET_DIR}/certificate-id.txt"
+
+  CERTIFICATE_ARN="$(cat "${SECRET_DIR}/certificate-arn.txt")"
+  CERTIFICATE_ID="$(cat "${SECRET_DIR}/certificate-id.txt")"
+  echo "Created IoT certificate: ${CERTIFICATE_ID}"
+fi
+
+aws iot attach-policy \
+  --policy-name "${POLICY_NAME}" \
+  --target "${CERTIFICATE_ARN}"
+
+aws iot attach-thing-principal \
+  --thing-name "${THING_NAME}" \
+  --principal "${CERTIFICATE_ARN}"
+
+curl -fsSL \
+  https://www.amazontrust.com/repository/AmazonRootCA1.pem \
+  -o "${SECRET_DIR}/AmazonRootCA1.pem"
+
+aws iot describe-endpoint \
+  --endpoint-type iot:Data-ATS \
+  --query endpointAddress \
+  --output text \
+  >"${SECRET_DIR}/endpoint.txt"
+
+cat >"${SECRET_DIR}/registration-summary.txt" <<SUMMARY
+AWS_REGION=${AWS_REGION}
+ACCOUNT_ID=${ACCOUNT_ID}
+FACTORY_ID=${FACTORY_ID}
+THING_NAME=${THING_NAME}
+POLICY_NAME=${POLICY_NAME}
+TOPIC_PREFIX=${TOPIC_PREFIX}
+CERTIFICATE_ARN=${CERTIFICATE_ARN}
+SECRET_DIR=${SECRET_DIR}
+SUMMARY
+
+find "${SECRET_DIR}" -maxdepth 1 -type f -exec chmod 600 {} \;
+chmod 700 "${SECRET_DIR}"
+
+echo "Registered IoT Thing and certificate."
+echo "Secret material directory: ${SECRET_DIR}"
+echo "Thing: ${THING_NAME}"
+echo "Policy: ${POLICY_NAME}"
+echo "Topic prefix: ${TOPIC_PREFIX}"

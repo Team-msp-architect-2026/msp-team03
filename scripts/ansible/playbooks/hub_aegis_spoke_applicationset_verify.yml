@@ -1,0 +1,85 @@
+---
+- name: Verify AEGIS Spoke ApplicationSet
+  hosts: hub_eks
+  gather_facts: false
+
+  tasks:
+    - name: Check required local commands
+      ansible.builtin.shell: "command -v {{ item }}"
+      args:
+        executable: /bin/bash
+      changed_when: false
+      loop:
+        - aws
+        - kubectl
+        - jq
+
+    - name: Update kubeconfig for Hub EKS
+      ansible.builtin.command:
+        cmd: "{{ update_kubeconfig_command }}"
+      changed_when: true
+
+    - name: Read AEGIS Spoke ApplicationSet
+      ansible.builtin.command:
+        cmd: "kubectl -n {{ argocd_namespace }} get applicationset {{ gitops_applicationset_name }} -o json"
+      register: gitops_applicationset_json
+      changed_when: false
+
+    - name: Read Spoke Applications
+      ansible.builtin.shell: |
+        set -euo pipefail
+        app_name="{{ item.gitops_application_name | default('aegis-spoke-' ~ item.id) }}"
+        jq -cn \
+          --arg destinationName "$(kubectl -n {{ argocd_namespace }} get application "${app_name}" -o jsonpath='{.spec.destination.name}')" \
+          --arg destinationNamespace "$(kubectl -n {{ argocd_namespace }} get application "${app_name}" -o jsonpath='{.spec.destination.namespace}')" \
+          --arg sourceRepo "$(kubectl -n {{ argocd_namespace }} get application "${app_name}" -o jsonpath='{.spec.sources[0].repoURL}')" \
+          --arg sourcePath "$(kubectl -n {{ argocd_namespace }} get application "${app_name}" -o jsonpath='{.spec.sources[0].path}')" \
+          --arg valuesRepo "$(kubectl -n {{ argocd_namespace }} get application "${app_name}" -o jsonpath='{.spec.sources[1].repoURL}')" \
+          --arg syncStatus "$(kubectl -n {{ argocd_namespace }} get application "${app_name}" -o jsonpath='{.status.sync.status}')" \
+          --arg healthStatus "$(kubectl -n {{ argocd_namespace }} get application "${app_name}" -o jsonpath='{.status.health.status}')" \
+          '{destinationName: $destinationName, destinationNamespace: $destinationNamespace, sourceRepo: $sourceRepo, sourcePath: $sourcePath, valuesRepo: $valuesRepo, syncStatus: $syncStatus, healthStatus: $healthStatus}'
+      args:
+        executable: /bin/bash
+      register: gitops_spoke_application
+      changed_when: false
+      loop: "{{ aegis_spokes | selectattr('enabled') | list }}"
+      loop_control:
+        label: "{{ item.id }}"
+
+    - name: Parse GitOps resources
+      ansible.builtin.set_fact:
+        gitops_applicationset: "{{ gitops_applicationset_json.stdout | from_json }}"
+
+    - name: Assert ApplicationSet source
+      ansible.builtin.assert:
+        that:
+          - gitops_applicationset.spec.generators[0].git.repoURL == gitops_repo_url
+          - gitops_applicationset.spec.generators[0].git.revision == gitops_repo_revision
+          - gitops_applicationset.spec.generators[0].git.files[0].path == gitops_applicationset_values_file_glob
+        fail_msg: "ApplicationSet source does not match expected GitOps repo settings"
+
+    - name: Assert Spoke Application targets
+      ansible.builtin.assert:
+        that:
+          - (item.stdout | from_json).destinationName == item.item.id
+          - (item.stdout | from_json).destinationNamespace == gitops_applicationset_destination_namespace
+          - (item.stdout | from_json).sourceRepo == gitops_repo_url
+          - (item.stdout | from_json).sourcePath == gitops_applicationset_chart_path
+          - (item.stdout | from_json).valuesRepo == gitops_repo_url
+        fail_msg: "{{ item.item.id }} Application does not point at the expected repo or destination"
+      loop: "{{ gitops_spoke_application.results }}"
+      loop_control:
+        label: "{{ item.item.id }}"
+
+    - name: Print Spoke Application statuses
+      ansible.builtin.debug:
+        msg: "{{ item.item.id }} sync={{ (item.stdout | from_json).syncStatus | default('unknown') }} health={{ (item.stdout | from_json).healthStatus | default('unknown') }}"
+      loop: "{{ gitops_spoke_application.results }}"
+      loop_control:
+        label: "{{ item.item.id }}"
+
+    - name: Print ApplicationSet verification summary
+      ansible.builtin.debug:
+        msg:
+          - "ApplicationSet {{ gitops_applicationset_name }} uses {{ gitops_repo_url }}@{{ gitops_repo_revision }}"
+          - "Applications: {{ (aegis_spokes | selectattr('enabled') | map(attribute='gitops_application_name') | list) | join(', ') }}"

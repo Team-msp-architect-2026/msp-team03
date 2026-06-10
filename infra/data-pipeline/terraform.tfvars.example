@@ -1,0 +1,48 @@
+project_name = "AEGIS"
+environment  = "foundation-mvp"
+aws_region   = "ap-south-1"
+
+# Must match the S3 bucket name created by infra/foundation
+data_bucket_name = "aegis-bucket-data"
+
+# DynamoDB — table is managed by infra/foundation; name must match foundation's dynamodb_table_name
+dynamodb_table_name        = "AEGIS-DynamoDB-FactoryStatus"
+dynamodb_history_ttl_hours = 2
+
+# Lambda
+lambda_data_processor_name    = "AEGIS-Lambda-DataProcessor"
+lambda_data_processor_timeout = 60
+lambda_data_processor_memory  = 512
+
+lambda_snapshot_presigner_name          = "AEGIS-Lambda-SnapshotPresigner"
+lambda_snapshot_presigner_timeout       = 10
+lambda_snapshot_presigner_memory        = 128
+snapshot_presigner_allowed_factory_ids  = ["factory-a"]
+snapshot_presigner_max_file_bytes       = 5242880
+snapshot_presigner_expires_in_seconds   = 300
+snapshot_presigner_throttle_burst_limit = 20
+snapshot_presigner_throttle_rate_limit  = 5
+# snapshot_presigner_shared_token       = "set-with-tfvars-or-secure-workflow"
+
+# GraphAggregator5m Lambda
+lambda_graph_aggregator_name           = "AEGIS-Lambda-GraphAggregator5m"
+lambda_graph_aggregator_timeout        = 60
+lambda_graph_aggregator_memory         = 512
+graph_aggregator_enabled               = true
+graph_aggregator_factory_ids           = ["factory-a", "factory-b", "factory-c"]
+graph_bucket_minutes                   = 5
+graph_aggregator_lookback_buckets      = 1
+graph_bucket_ttl_hours                 = 48
+graph_expected_sample_interval_seconds = 3
+graph_ai_score_threshold               = 0.7
+
+# RiskAlertDispatcher
+risk_alert_dispatcher_s3_trigger_enabled = true
+risk_alert_slack_webhook_secret_name      = "AEGIS/foundation-mvp/risk-alert/slack-webhook-url"
+
+# CloudInfraFastCollector optional operating targets.
+# Set these in local terraform.tfvars or TF_VAR_* during operations.
+# cloud_infra_fast_collector_cloudfront_distribution_id = "set-with-tfvars-or-secure-workflow"
+# cloud_infra_fast_collector_dlq_queue_name             = "set-with-tfvars-or-secure-workflow"
+# cloud_infra_fast_collector_rds_db_instance_id         = "set-with-tfvars-or-secure-workflow"
+# cloud_infra_fast_collector_redis_replication_group_id = "set-with-tfvars-or-secure-workflow"
