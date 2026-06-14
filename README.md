@@ -9,7 +9,7 @@
 
 <div align="center">
 
-  <img src="https://img.shields.io/badge/Status-Phase%208%20Integrated-2ea44f" alt="Status" />
+  <img src="https://img.shields.io/badge/Status-Implementation%20Complete-2ea44f" alt="Status" />
   <img src="https://img.shields.io/badge/Edge-K3s-FFC61C?logo=kubernetes&logoColor=white" alt="K3s" />
   <img src="https://img.shields.io/badge/Cloud-AWS%20EKS-FF9900?logo=amazonwebservices&logoColor=white" alt="AWS EKS" />
   <img src="https://img.shields.io/badge/IaC-Terraform-7B42BC?logo=terraform&logoColor=white" alt="Terraform" />
@@ -24,9 +24,36 @@
 
 <br>
 
-> **기존 Safe-Edge의 단일 공장 고가용성 엣지를 3개 공장 + AWS Hub 구조로 확장하고, IoT 데이터 기반 Safety Score를 중앙 대시보드·일간 보고서·알림으로 제공하는 Risk Twin 플랫폼입니다.**
+> **"한 공장이 무슨 일이 있어도 살아남는" 고가용성 엣지(Safe-Edge)를, 여러 공장을 한 화면에서 관제하는 클라우드 플랫폼으로 확장한 프로젝트입니다.**
+> 공장의 센서·AI·인프라 상태를 하나의 **Safety Score(0~100)** 로 표준화해 **중앙 대시보드 · 일간 보고서 · Slack 알림** 으로 제공합니다.
 
-기준일: 2026-06-09 · 상태: Phase 8 통합 완료 (실환경 통합 smoke test 대기)
+기준일: 2026-06-14 · 상태: **구현 완료**
+
+---
+
+## 🚦 처음 오셨나요? (60초 요약)
+
+- **무엇을** — 여러 제조 공장의 안전 상태를 클라우드에서 한눈에 보는 중앙 관제 플랫폼
+- **왜** — 기존 단일 공장 엣지(Safe-Edge)는 한 공장의 생존성은 완성했지만, 공장이 늘면 **통합 관제·위험도 표준화·Fleet 운영**이 불가능했음
+- **어떻게** — `Edge(K3s) → AWS IoT Core → 데이터 파이프라인 → 대시보드` 로 데이터를 모으고, **제어 평면과 데이터 평면을 VPC로 분리**해 안전하게 노출
+- **결과물** — 공장별 상태 카드 대시보드 · LLM 기반 한국어 일간 보고서 · 실시간 위험 알림
+
+> 더 깊이 보려면 아래 [빠른 검토 순서](#-빠른-검토-순서)를, 코드 변경 이력이 궁금하면 [저장소 & 팀](#-저장소--팀-repository--team) 섹션을 참고하세요.
+
+---
+
+## 📦 저장소 & 팀 (Repository & Team)
+
+이 저장소(**msp-team03**)는 팀원 전원의 코드와 문서를 합친 **최종 통합본**으로, **메인 설명과 전체 Wiki 문서**가 여기에 있습니다.
+**작업 진행 과정(커밋 단위 이력)** 은 아래 각 담당자의 원본 작업 저장소에서 확인하세요.
+
+| 저장소 | 담당 | 역할 · 작업 범위 |
+|:---|:---|:---|
+| 🏛️ [**msp-team03**](https://github.com/Team-msp-architect-2026/msp-team03) <br/>*(현재 위치 · 최종 통합본)* | 팀 전체 | 최종 코드 + 메인 설명 + [Wiki 문서](https://github.com/Team-msp-architect-2026/msp-team03/wiki) |
+| 🏭 [**Aegis-pi**](https://github.com/aegis-pi/Aegis-pi) | **팀장 · 김민수** [@gitminsoo](https://github.com/gitminsoo) | factory-a/c · Control/Management VPC · CI/CD 작업 이력 |
+| 📊 [**dashboard_vpc**](https://github.com/aegis-pi/dashboard_vpc) | **팀원 · 김종원** [@JJong-03](https://github.com/JJong-03) | factory-b · Data/Dashboard VPC 작업 이력 |
+
+> 📌 최종 결과물·문서는 **이 저장소**에서, 작업이 쌓여온 **커밋 히스토리**는 **원본 작업 저장소**에서 확인하세요.
 
 ---
 
@@ -40,15 +67,6 @@
 | 4 | 핵심 설계 결정 | [ADR 인덱스](https://github.com/Team-msp-architect-2026/msp-team03/wiki/adr-index) |
 | 5 | 인수 기준과 산출물 | [인수 기준 및 산출물](https://github.com/Team-msp-architect-2026/msp-team03/wiki/srs-acceptance) |
 | 6 | 전체 문서 | [Wiki 홈](https://github.com/Team-msp-architect-2026/msp-team03/wiki) |
-
----
-
-## 👥 팀원
-
-| 역할 | 이름 | 주요 담당 | GitHub |
-|:---:|:---:|:---|:---:|
-| 팀장 | 김민수 | factory-a/c · Control/Management VPC · CI/CD | [@gitminsoo](https://github.com/gitminsoo) |
-| 팀원 | 김종원 | factory-b · Data/Dashboard VPC | [@JJong-03](https://github.com/JJong-03) |
 
 ---
 
@@ -86,25 +104,7 @@ Safe-Edge 기준선을 유지하면서 **AWS EKS Hub + Tailscale Mesh + Dual VPC
 
 ---
 
-## ✅ 2. 현재 상태 (Phase 8 통합 완료)
-
-두 원본 워크스트림(Edge/Hub, Data/Dashboard)이 단일 저장소로 통합됐고 주요 앱 단위 테스트가 통과했다. 잔여는 통합본 의존성 설치 후 검증과 실환경 end-to-end smoke test다.
-
-| 영역 | 상태 | 비고 |
-|:---|:---|:---|
-| Factory A Safe-Edge | ✅ 배포 검증 완료 | K3s · Longhorn · failover/failback · IoT 송신 |
-| Factory B/C 테스트베드 | ✅ 배포 검증 이력 | VM K3s · dummy generator · hostPath outbox |
-| Data Pipeline | ✅ 구현 완료 · 테스트 통과 | DataProcessor · GraphAggregator5m · CloudInfra collector |
-| Dashboard Web/API | ✅ 구현 완료 | ECS Fargate FastAPI + React SPA |
-| Reporting | ✅ 구현 완료 · 배포 검증 이력 | Step Functions + 7 Lambda + Bedrock |
-| Alerting / Snapshot / RBAC | ✅ 구현 완료 | Slack alert · presigned S3 · Cognito+RDS |
-| 통합본 smoke test | ⏳ 대기 | 실환경 end-to-end 검증 |
-
-상세 → [현재 구현 상태](https://github.com/Team-msp-architect-2026/msp-team03/wiki/project-current-status) · [로드맵](https://github.com/Team-msp-architect-2026/msp-team03/wiki/roadmap)
-
----
-
-## 🏗️ 3. Architecture
+## 🏗️ 2. Architecture
 
 제어 평면(Control/Management VPC)과 데이터 평면(Data/Dashboard VPC)을 **직접 연결 없이** 분리해, 사용자 대시보드가 K3s·EKS·ArgoCD 관리 API에 접근하지 않고 read model만 조회한다.
 
@@ -130,7 +130,7 @@ Factory A/B/C (K3s Spoke + Edge Agent)
 
 ---
 
-## ⚙️ 4. 핵심 기능
+## ⚙️ 3. 핵심 기능
 
 | 기능 | 설명 | 문서 |
 |:---|:---|:---|
@@ -146,7 +146,7 @@ Factory A/B/C (K3s Spoke + Edge Agent)
 
 ---
 
-## 🛠️ 5. Tech Stack
+## 🛠️ 4. Tech Stack
 
 | 계층 | 기술 |
 |:---|:---|
@@ -161,7 +161,7 @@ Factory A/B/C (K3s Spoke + Edge Agent)
 
 ---
 
-## ⚖️ 6. 핵심 설계 결정 (ADR)
+## ⚖️ 5. 핵심 설계 결정 (ADR)
 
 | 결정 | 요약 |
 |:---|:---|
@@ -177,7 +177,7 @@ Factory A/B/C (K3s Spoke + Edge Agent)
 
 ---
 
-## 🔁 7. Edge 고가용성 (Factory A 계층)
+## 🔁 6. Edge 고가용성 (Factory A 계층)
 
 운영형 Spoke는 다중 노드 K3s와 Longhorn 동기 복제로 단일 노드 장애에도 무중단을 목표로 한다.
 
@@ -197,7 +197,7 @@ worker2 NotReady 감지 (tolerationSeconds 단축)
 
 ---
 
-## 🚀 8. 빌드 / 운영 / 비용
+## 🚀 7. 빌드 / 운영 / 비용
 
 Terraform root는 의존성 순서로 빌드하고 역순으로 destroy한다.
 
@@ -216,7 +216,7 @@ destroy: data-dashboard / reporting → data-pipeline → hub → foundation(영
 
 ---
 
-## 📚 9. 문서 네비게이션 (Wiki)
+## 📚 8. 문서 네비게이션 (Wiki)
 
 | 영역 | 문서 |
 |:---|:---|
