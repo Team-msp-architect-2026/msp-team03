@@ -1,8 +1,47 @@
 # AWS Cost Baseline
 
 상태: source of truth
-기준일: 2026-05-08
-리전: `ap-south-1` / Asia Pacific (Mumbai)
+기준일: 2026-06-17
+리전: `ap-south-1` / Asia Pacific (Mumbai), 글로벌(CloudFront/ACM us-east-1) 일부
+수정 이력:
+  - 2026-06-17 v3.8  2026-06-16 사용자 요청으로 Data/Dashboard 재생성 root destroy 완료 상태 반영. `infra/data-dashboard` state 0, `infra/data-dashboard-permanent` 25 resources, `infra/data-dashboard-dns` 1 resource 기준. VPC/NAT/ALB/ECS/RDS/Redis/Lambda/SQS/runtime Secrets/API DNS/ALB ACM은 비활성으로 재분류하고, 비용 기준은 영구 root 잔여 `~$0.55/월` + RDS final snapshot storage 중심으로 정정.
+  - 2026-06-11 v3.7  ADR 0035 Nova 모델 평가 반영. 챗봇 기본 조합을 `resolve=apac.amazon.nova-micro-v1:0`, `fast/precise=apac.amazon.nova-pro-v1:0`로 전환. 월 720회 기준 기존 Claude 조합 `~$4.3/월`에서 Nova 조합 `~$1.5/월`로 약 65% 절감. 상시 리소스 변화 없음. ECS task role IAM allowlist에 Nova inference profile/foundation model pattern 추가.
+  - 2026-06-09 v3.6  ADR 0034 LLM 라우팅 반영. 챗봇 1콜당 앞단 **resolve(Haiku 4.5 Converse tool-use)** 1콜이 추가됨(입력 ~1.2k/출력 ~150 토큰). 월 720회 기준 resolve 비용 `~$1.4/월`(입력 720×1.2k×$1/M ≈ $0.86 + 출력 720×150×$5/M ≈ $0.54) 추가로, 챗봇 사용량 비용은 v3.5 `~$2.88/월` → `~$4.3/월` 수준. 고정 비용 무변경(상시 리소스 없음, IAM 권한도 기존 Bedrock 권한 재사용). `chat_routing_enabled=false`로 끄면 규칙 파서만 사용해 resolve 비용 0.
+  - 2026-06-09 v3.5  ADR 0033 Bedrock 챗봇 backend/배포 인프라 구현 반영. ECS task role `bedrock:InvokeModel`과 backend env 추가는 고정 비용 없음. 현 VPC는 private app subnet → NAT Gateway 기본 경로가 있어 Bedrock egress 가능하며, Bedrock interface endpoint는 비용 대비 현 단계 비채택. 사용량 기준에 fast(Haiku 4.5) `$1/M input + $5/M output`, precise(Sonnet 4.6) `$3/M input + $15/M output` 가정과 월 720회 챗봇 예시 비용 `~$2.88/월` 추가. Phase 1 합계는 v3.4 고정비 기준으로 상시 `~$183.15/월`, 데모 운영 `~$12.53/월`로 보정.
+  - 2026-06-04 v3.4  ADR 0030 **apply + 롤아웃 완료**. `terraform apply`(autoscaling target/policy 2 + task def revision 31), `update-service --task-definition kjw-aegis-data-backend:31 --force-new-deployment` → `services-stable` STABLE. 검증: 서비스 desired/running 2, rolloutState COMPLETED, task 2개 cpu 1024/memory 2048/HEALTHY, AZ 1a+1c 분산, scalable target min 2/max 2. 고정 비용 ~$178.35/월(상시) · 데모 ~$7.73/월(16h) 적용 시작. 리소스 상태 표 active 갱신.
+  - 2026-06-04 v3.3  ADR 0030 ECS backend right-sizing + Application Auto Scaling 반영(Terraform 구현 + plan 검증 완료, apply 대기 / `terraform plan` = 4 add·0 change·1 destroy). ① task 사양 0.5 vCPU/1 GB → **1 vCPU/2 GB**(512/1024 → 1024/2048): `uvicorn --workers 2`가 0.5 코어를 두고 경쟁하던 oversubscription 해소, GIL-bound history 파싱 가속. 메모리는 1 vCPU의 Fargate 최소치(2 GB)일 뿐 사용량은 ~40%. ② 상시 task 1→**min 2 / max 2 핀**(데모 프로파일: 짧은 버스트엔 반응형 scale 무의미 → 2개 warm 고정, churn 차단), target tracking 2 policy(ALBRequestCountPerTarget 40 + CPU 50%)는 작성하되 min==max 동안 inert(프로덕션 전환 시 max 3~4로 활성). apply 후 고정 비용 상시 가동 ~$123.90→**~$178.35/월**(ECS $18.05→$72.08 = 2×$36.04, + alarm 4개 ~$0.40). 데모 운영(16h/월) ~$6.55→~$7.73/월. max 비용 영향 없음(고정 비용=min 2). 근거: 2026-06-04 incident — 단일 0.5 vCPU task 102 req/min에서 CPU 100%/응답 16s/5xx, 메모리 40%. ※ 서비스 `ignore_changes=[task_definition]` 때문에 apply만으로는 새 사양이 롤아웃되지 않음 → apply 후 `aws ecs update-service --task-definition <family>:<new> --force-new-deployment` 필요.
+  - 2026-06-04 v3.2  CloudInfraFastCollector/SlowCollector 실제 배포 반영. 기존 Lambda/Scheduler를 사용해 코드 업데이트, FastCollector IAM에 ElastiCache/RDS read 권한 추가. 신규 고정 시간 비용 없음. 사용량 비용은 v3.1 추정치($0.3~1.0/월, 주로 CloudWatch GetMetricData API) 유지.
+  - 2026-06-01 v3.1  ADR 0027 / `docs/planning/29` Cloud Infra Metrics Pipeline 계획 반영. CloudInfraFastCollector(1m)/SlowCollector(5m) Lambda + EventBridge schedule 2개를 `not deployed — 계획`으로 리소스 상태 표에 추가. 배포 시 사용량 ~$0.3~1.0/월(주로 CloudWatch GetMetricData API), 고정 시간 비용 없음(무료 티어 내). CloudWatch Container Insights는 기본 OFF 유지(상시 켜면 ~$65~75/월).
+  - 2026-05-29 v3.0  Dashboard backend image `sha-3c20ec3` ECS revision 15 적용 완료. desired/running 1, rollout completed, `/healthz`와 `/readyz` 정상. 신규 AWS 리소스/고정 비용 변화 없음.
+  - 2026-05-29 v2.9  ADR 0025 Multi-resolution history storage 반영. GraphAggregator5m/EventBridge와 GRAPH#5M 추가 write/storage는 무료 티어 또는 소액 usage-based이며 고정 시간 비용 변화 없음.
+  - 2026-05-27 v2.8  Aegis-frontend 기준 운영 Dashboard UI 포팅 진행 상태와 top_causes 표시 보정 반영. web `e055583` 배포, backend image `sha-3b8439f` ECS 적용. 신규 AWS 리소스/고정 비용 변화 없음.
+  - 2026-05-27 v2.7  Dashboard 운영 UI/실데이터 shape 정합성 수정 배포 반영. backend image `sha-439e27a`, web/backend GitHub Actions 성공. 신규 AWS 리소스/고정 비용 변화 없음.
+  - 2026-05-27 v2.6  사용자 요청으로 infra/data-dashboard 일시 root 재기동 완료 반영. VPC/NAT/ALB/ECS/RDS/Redis/Lambda/IoT Rules active, API /healthz HTTP 200. 비용 기준은 Phase 1 가동 시 표 적용.
+  - 2026-05-27 v2.5  post-migration permanent diff 정리 완료 반영. DynamoDB daily-report PITR/deletion protection 활성화. 빈 테이블 기준 비용 영향은 미미하며 PITR은 데이터 증가 시 사용량 기반.
+  - 2026-05-26 v2.4  Step 9.5 이후 infra/data-dashboard destroy 완료 반영. 일시 root state empty, permanent/dns root 유지, 잔여 비용 기준 갱신.
+  - 2026-05-26 v2.3  Step 9.5 migration 완료 반영. infra/data-dashboard-permanent/ active root로 갱신. Cognito/ECR/DDB daily-report/S3-web/CloudFront/ACM CF cert/OIDC roles는 permanent root 관리로 재분류.
+  - 2026-05-26 v2.2  Step 9.5 설계 완료 반영. infra/data-dashboard-permanent/ 영구 root 계획. destroy 후 잔여 비용에 permanent root 잔여 ~$0.50~0.55/월 추가 명세.
+  - 2026-05-26 v2.1  Step 9 CI/CD 구현/적용/SPA 배포 반영. IAM role 1개 추가(상시 비용 없음). S3 PUT/GET/DELETE + CloudFront invalidation: usage-based 소량. 고정 비용 변화 없음.
+  - 2026-05-26 v2.0  Step 8 Frontend SPA 로컬 구현 완료 반영. 신규 AWS 리소스 없음, 기존 S3/CloudFront 배포는 Step 9에서 진행.
+  - 2026-05-26 v1.9  Step 7 Backend 활성화 반영. ECR `sha-9d2c200`, ECS desired/running 1, `/healthz` 200 확인. 리소스 상태 표를 active로 갱신.
+  - 2026-05-26 v1.8  Step 7 apply 완료 + Step 7.5 Route53 영구 분리 반영. Route53 hosted zone을 영구 자원으로 재분류. destroy 후 잔여 비용 설명 갱신. $0.50/월 영구 비용 명시.
+  - 2026-05-26 v1.7  Step 8을 운영용 Frontend Vite + React 마이그레이션으로 재정의. LLM report-generator/Bedrock 비용은 팀원/후속 작업 예상치로 분리. Backend ECS Task Role의 Bedrock 권한 제거 반영.
+  - 2026-05-26 v1.6  Step 7 Terraform 구현 완료 반영. ECR `aegis/dashboard-backend` 신설, ECS Fargate Cluster/TaskDef/Service/CloudWatch Logs/IAM 추가. Secrets Manager 2개 추가(database_url/redis_url, 합계 4개). 리소스 상태 표 갱신. 비용 표 갱신(Secrets 4개로 수정).
+  - 2026-05-26 v1.5  Step 6 완료(로컬 구현) 반영. apps/dashboard-backend/ 신설, ECS/ECR/ALB는 Step 7 배포 전으로 AWS 비용 미발생. 리소스 상태 표 Step 6 항목 갱신.
+  - 2026-05-22 v1.4  `infra/data-dashboard` destroy 완료(73 destroyed). Data/Dashboard VPC active 리소스 삭제, backend state bucket + RDS final snapshot만 잔존. build/destroy wrapper와 snapshot/secret 재생성 기준 반영.
+  - 2026-05-21 v1.3  Step 5.5 apply 완료 (ADR 0022). AEGIS-DynamoDB-FactoryStatus Streams 활성화. Lambda data processor env / IAM / notifier ESM을 공식 table로 재정렬. 중복 aegis-factory-status 삭제 완료.
+  - 2026-05-21 v1.2  Step 5 apply 완료. Lambda notifier/SQS DLQ 추가 (7 resources 추가, 누적 73). 리소스 상태 표 갱신.
+  - 2026-05-21 v1.1  Step 3 apply 완료. DynamoDB 2개/RDS PostgreSQL/ElastiCache Redis/Secrets Manager 2개 생성(12 resources 추가, 누적 59). 리소스 상태 표 갱신.
+  - 2026-05-21 v1.0  Step 2 전체 apply 완료. 47 resources 생성 (3회 apply 누적). ACM ISSUED(ALB ap-south-1 / CloudFront us-east-1). CloudFront 배포/HTTPS listener/S3 bucket policy/Route53 web_cloudfront 레코드 활성. terraform plan No changes 확인. 리소스 상태 표 갱신.
+  - 2026-05-21 v0.9  Step 2 부분 apply 완료. 41 resources 생성(VPC/NAT GW/ALB/SGs/Cognito/S3-web/CloudFront-OAC/Route53-zone/ACM 요청). ACM PENDING_VALIDATION(Gabia NS 위임 필요). 잔여 6개(CloudFront 배포/HTTPS listener 등)는 NS 위임 후 전체 apply. 현재 리소스 상태 반영. 비용은 추정치 유지(NAT GW 1개 포함 상시 가동 ~$125/월, 데모 ~$8~10/월).
+  - 2026-05-21 v0.8  backend-bootstrap apply 완료(`kjw-aegis-terraform-state` S3 backend bucket + S3 native lockfile). DynamoDB lock table은 미사용으로 정정. plan 47 resources 검증 완료. 비용 항목은 apply 전 추정치 그대로 유지(실측은 infra/data-dashboard apply 후 v0.9에서 갱신 예정).
+  - 2026-05-21 v0.7  Phase 1 Step 2 `infra/data-dashboard/` Terraform skeleton 완성. 리소스 상태 표에 1번 VPC skeleton 반영. 비용 항목은 v0.5/v0.6 추정치 그대로 유지(실측은 apply 후 v0.8에서 갱신 예정).
+  - 2026-05-20 v0.6  2026-05-15 rebuild 후 Hub/Foundation/IoT/Admin UI 활성 상태와 1번 VPC 미배포 상태를 현재 리소스 상태에 반영.
+  - 2026-05-19 v0.5  ADR 0017 반영. 1번 VPC 메타 저장소를 Aurora Serverless v2에서 RDS PostgreSQL(db.t4g.micro, gp3 20GiB)로 변경하고 비용 기준 재계산.
+  - 2026-05-18 v0.4  ADR 0012~0016 반영. Phase 1 통합으로 NAT GW × 1 + ALB + ECS Fargate + Aurora Serverless v2 + ElastiCache Redis + Bedrock 항목 신설. 데모 운영 패턴(build/destroy 사이클) 비용 분리.
+  - 2026-05-15 v0.3  ADR 0011 반영. 1번 VPC NAT GW 제거 후 고정 비용 ~$0.50/월로 갱신, S3 dashboard-web bucket 항목 추가.
+  - 2026-05-15 v0.2  ADR 0006~0010 반영. 1번 Data/Dashboard VPC 예상 비용 섹션 추가 (실제 apply 전 추정).
+  - 2026-05-08  Hub destroy 후 baseline
 
 ## 목적
 
@@ -12,33 +51,70 @@
 
 ## 현재 Aegis 리소스 상태
 
-2026-05-08 `scripts/destroy/destroy-all.sh` 실행 후 확인 결과다. Hub active 비용 산정은 아래 "Hub active 시 비용" 섹션에 별도로 유지한다.
+2026-05-15 rebuild 후 Hub/Foundation/IoT/Admin UI 활성 상태와 2026-06-16 Data/Dashboard 재생성 root destroy 완료 기준이다. Hub active 비용 산정은 아래 "Hub active 시 비용" 섹션에 별도로 유지한다. 1번 Data/Dashboard의 VPC/NAT/ALB/ECS/RDS/Redis/Lambda 일시 자원은 현재 비활성이며, `infra/data-dashboard-dns/`와 `infra/data-dashboard-permanent/`가 관리하는 영구 리소스만 유지된다. 다음 데모/수기 검증 때 `scripts/build/build-data-dashboard.sh`로 재생성 root를 올리면 아래 "고정 시간 비용 — Phase 1 가동 시" 표가 다시 적용된다.
 
 | 영역 | 리소스 | 수량/크기 | 상태 |
 | --- | --- | ---: | --- |
-| EKS | `AEGIS-EKS` control plane | 0 | deleted |
-| EC2 | `AEGIS-EKS-node` | 0 | previous instances terminated |
-| EBS | EKS node root volume | 0 | deleted/not found |
-| VPC/Subnet | `AEGIS-VPC` and subnets | 0 | deleted |
-| NAT Gateway | `AEGIS-NAT-public-Azone`, `AEGIS-NAT-public-Czone` | 0 | deleted |
-| Public IPv4 | NAT Gateway Elastic IP / ALB public IPv4 | 0 | released with deleted resources |
-| S3 | `aegis-bucket-data` | 0 | bucket deleted |
-| IoT Core | `AEGIS_IoTRule_factory_a_raw_s3` | 0 | deleted with foundation |
-| IoT Core | `AEGIS-IoTThing-factory-a` / `AEGIS-IoTPolicy-factory-a` / certificate | 0 | deleted |
-| AMP | `AEGIS-AMP-hub` | 0 | workspace deleted |
-| EKS workload | `observability/grafana` | 0 | deleted with EKS |
-| EKS workload | `kube-system/aws-load-balancer-controller` | 0 | deleted with EKS |
-| Route53 | public hosted zone `minsoo-tech.cloud` | 0 | deleted |
-| ACM | public certificate for `minsoo-tech.cloud`, `argocd.minsoo-tech.cloud`, `grafana.minsoo-tech.cloud` | 0 | deleted |
-| ALB | `aegis-admin-ui` | 0 | deleted |
-| KMS | AEGIS EKS customer managed keys | 0 active | current and historical keys are `PendingDeletion` |
-| CloudWatch Logs | `/aws/eks/AEGIS-EKS/cluster` | 0 active EKS cluster | log group cost should be rechecked if retained outside Terraform |
+| EKS | `AEGIS-EKS` control plane | 1 | active |
+| EC2 | `AEGIS-EKS-node` managed node group | 2 × `t3.medium` | active |
+| EBS | EKS node root volume | 40 GiB 추정 | active with node group |
+| VPC/Subnet | `AEGIS-VPC` and subnets | 1 VPC / 2 AZ | active |
+| NAT Gateway | Hub NAT Gateway | 2 | active |
+| Public IPv4 | NAT Gateway Elastic IP / Admin UI ALB public IPv4 | active 수량은 AWS 조회로 확인 | active |
+| S3 | `aegis-bucket-data` | 1 bucket | active |
+| IoT Core | `AEGIS_IoTRule_factory_a_raw_s3` | 1 rule | active |
+| IoT Core | `AEGIS-IoTThing-factory-a` / `AEGIS-IoTPolicy-factory-a` / certificate | 1 set | active |
+| AMP | `AEGIS-AMP-hub` | 1 workspace | active |
+| ECR | `aegis/edge-agent` | 1 repo | active, push/pull 검증은 워크스트림 A 진행 중 |
+| EKS workload | `observability/grafana` | 1 release | active |
+| EKS workload | `observability/prometheus-agent` | 1 release | active |
+| EKS workload | `kube-system/aws-load-balancer-controller` | 1 release | active |
+| Route53 | public hosted zone `minsoo-tech.cloud` | 1 zone | active |
+| ACM | public certificate for Admin UI hosts | 1 regional certificate set | active / ISSUED |
+| ALB | `aegis-admin-ui` | 1 | active |
+| Data/Dashboard VPC | `infra/data-dashboard/` Terraform | 일시 root | **destroyed**. 2026-06-16 destroy 완료, state count 0 |
+| Data/Dashboard VPC | `infra/data-dashboard-permanent/` Terraform | 25 imported resources | **active (영구 자원)**. Cognito / ECR / DDB daily-report / S3-web / CloudFront / ACM CF cert / OIDC roles 관리 |
+| Data/Dashboard VPC | backend-bootstrap: `kjw-aegis-terraform-state` S3 backend bucket + S3 native lockfile | 1 bucket (+ ownership/public-block/versioning/SSE) | active, 유지 |
+| Data/Dashboard VPC | Route53 hosted zone `aegis-pi.cloud` | 1 zone | **active (영구 자원)**. Step 7.5 이후 `infra/data-dashboard-dns/` root가 관리. `infra/data-dashboard` destroy 대상에서 제외. `$0.50/월` 상시 발생 |
+| Data/Dashboard VPC | 1번 VPC / NAT GW (Azone 단일) / ALB / SGs | 0 active | destroyed with `infra/data-dashboard` |
+| Data/Dashboard VPC | Cognito User Pool / App Client / Hosted UI Domain | 1 set | active, permanent root |
+| Data/Dashboard VPC | S3-web bucket / CloudFront / OAC / dashboard Route53 record | 1 set | active, permanent root |
+| Data/Dashboard VPC | ACM alb (ap-south-1) | 0 active | destroyed with `infra/data-dashboard` |
+| Data/Dashboard VPC | ACM cloudfront (us-east-1) | 1 certificate | active / ISSUED, permanent root |
+| Data/Dashboard VPC | HTTPS listener / api Route53 record | 0 active | destroyed with `infra/data-dashboard`; API runtime unavailable until rebuild |
+| Data/Dashboard VPC | DynamoDB `AEGIS-DynamoDB-FactoryStatus` | 1 table | **active**. 공식 hot store(ADR 0022), Streams NEW_AND_OLD_IMAGES 활성(2026-05-21). data-dashboard 재생성 시 Lambda write 대상 |
+| Data/Dashboard VPC | DynamoDB `aegis-factory-status` | 0 | deleted |
+| Data/Dashboard VPC | DynamoDB `aegis-daily-report` | 1 table | active, on-demand, permanent root |
+| Data/Dashboard VPC | RDS PostgreSQL `kjw-aegis-data-pg` | 0 active | destroyed; final snapshot retained |
+| Data/Dashboard VPC | ElastiCache Redis `kjw-aegis-data-redis` | 0 active | destroyed with `infra/data-dashboard` |
+| Data/Dashboard VPC | Secrets Manager (RDS + Redis AUTH) | 0 active | runtime secrets destroyed with `infra/data-dashboard` |
+| Data/Dashboard VPC | Lambda data processor `KJW-AEGIS-Data-Lambda-data-processor` | 0 active | destroyed with `infra/data-dashboard` |
+| Data/Dashboard VPC | Lambda GraphAggregator5m / EventBridge schedule | 0 active | destroyed with `infra/data-dashboard` |
+| Data/Dashboard VPC | IoT Rule `KJW_AEGIS_Data_IoTRule_factory_state_processor` | 0 active | destroyed with `infra/data-dashboard` |
+| Data/Dashboard VPC | IoT Rule `KJW_AEGIS_Data_IoTRule_infra_state_processor` | 0 active | destroyed with `infra/data-dashboard` |
+| Data/Dashboard VPC | Lambda notifier `KJW-AEGIS-Data-Lambda-notifier` | 0 active | destroyed with `infra/data-dashboard` |
+| Data/Dashboard VPC | SQS DLQ `kjw-aegis-data-notifier-dlq` | 0 active | destroyed with `infra/data-dashboard` |
+| Data/Dashboard VPC | DDB Streams ESM (AEGIS-DynamoDB-FactoryStatus → Lambda notifier) | 0 active | destroyed with `infra/data-dashboard` |
+| Data/Dashboard VPC | Dashboard Backend 코드 (`apps/dashboard-backend/`) | 구현 완료 | `/chat/query`, `/image-snapshots`, RBAC, Cloud Infra, Reports 조회 포함. 런타임은 rebuild 전 비활성 |
+| Data/Dashboard VPC | ECR `aegis/dashboard-backend` | 1 repo | active, permanent root. Image tags retained |
+| Data/Dashboard VPC | ECS Fargate Cluster/TaskDef/Service | 0 active | destroyed with `infra/data-dashboard`; rebuild 시 desired/min 2, 1 vCPU/2 GB 기준 |
+| Data/Dashboard VPC | ECS backend Application Auto Scaling (target + 2 policy) | 0 active | destroyed with `infra/data-dashboard`; rebuild 시 min 2/max 2 기준 |
+| Data/Dashboard VPC | Bedrock chatbot `/chat/query` | resolve Nova Micro / fast+precise Nova Pro | 코드/Terraform 기본값 반영. API runtime destroy 중이므로 현재 호출 불가, rebuild 후 요청 기반 과금 |
+| Data/Dashboard VPC | CloudWatch Logs `/ecs/kjw-aegis-data-backend` | 0 active | destroyed with `infra/data-dashboard` |
+| Data/Dashboard VPC | Secrets Manager `kjw-aegis-data-database-url`, `kjw-aegis-data-redis-url` | 0 active | destroyed with `infra/data-dashboard` |
+| Data/Dashboard VPC | IAM OIDC roles (ECR push + web deploy) | 2 roles | active, permanent root. IAM: 무료 |
+| Data/Dashboard VPC | S3 web bucket deploy (PUT/DELETE/GET ops) | usage-based | Step 9 workflow 실행 완료. PUT ~$0.005/1000 req, GET ~$0.0004/1000 req |
+| Data/Dashboard VPC | CloudFront invalidation `//*` | usage-based | 월 1,000 paths 무료, 초과 $0.005/path |
+| Data/Dashboard VPC | Lambda report-generator | 0 | not deployed — LLM 일간 보고서 팀원/후속 작업 |
+| Data/Dashboard VPC | Lambda CloudInfraFastCollector + EventBridge schedule 1m | 0 active | destroyed with `infra/data-dashboard` |
+| Data/Dashboard VPC | Lambda CloudInfraSlowCollector + EventBridge schedule 5m | 0 active | destroyed with `infra/data-dashboard` |
 
 현재 확인된 비활성 또는 미생성 항목:
 
 - NLB 없음
-- ECR repository 없음
-- Dashboard VPC 없음
+- 1번 Data/Dashboard VPC Backend runtime은 현재 destroyed. ECS desired/running 0, `/healthz`는 rebuild 전 확인 대상 아님
+- Lambda report-generator는 팀원/후속 작업으로 현재 미배포. Bedrock 챗봇은 backend/Terraform 구현 완료이나 API runtime destroy 중
+- Cloud Infra Metrics collector(ADR 0027 / `docs/planning/29`)는 현재 destroyed. rebuild 시 사용량 ~$0.3~1.0/월, 고정 비용 없음. CloudWatch Container Insights는 기본 OFF 유지
 - Resource Groups Tagging API는 삭제 직후 terminated/deleted 리소스나 `PendingDeletion` KMS key를 한동안 반환할 수 있다.
 - EKS managed node group Auto Scaling Group은 직접 비용 리소스가 아니므로 EC2/EBS/NAT/EKS 기준으로 비용 계산
 
@@ -95,6 +171,133 @@ Admin UI Ingress가 만드는 추가 고정성 비용 추정:
 
 Admin UI Ingress를 끄면 위 비용, 약 `0.0419 USD/hour`를 줄일 수 있다. 실제 LCU와 public IPv4 수는 트래픽, AZ, ALB 동작 상태에 따라 달라질 수 있으므로 `aws elbv2 describe-load-balancers`, Cost Explorer, Public IP Insights로 다시 확인한다.
 
+## 1번 Data/Dashboard VPC 예상 비용 (ADR 0006~0017, Phase 1 통합, apply 전 추정)
+
+ADR 0012~0017으로 Phase 1 통합 결정이 반영된 후의 예상 시간/월 비용이다. 실제 apply 후 측정값으로 재갱신한다.
+
+ADR 0011(NAT GW 제거)는 ADR 0012로 supersede됨 → Phase 1에서 NAT Gateway × 1을 단일 AZ로 재도입. 데모 운영 패턴(`build-data-dashboard.sh` / `destroy-data-dashboard.sh` 사이클)으로 미가동 시에는 비용이 ~$2~3/월로 회복된다.
+
+### 고정 시간 비용 — Phase 1 가동 시 (상시 운영 가정)
+
+| 비용 항목 | 수량 | 단가 | 시간당 | 월 환산 (730h) |
+| --- | ---: | ---: | ---: | ---: |
+| Route53 public hosted zone (신규 도메인) | 1 | `$0.50 / month` | `$0.0007` | `$0.50` |
+| ACM public certificate | 2 | 무료 (DNS 검증) | `$0.0000` | `$0.00` |
+| Cognito User Pool (관리자 1~5명) | 1 | 50,000 MAU 무료 티어 | `$0.0000` | `$0.00` |
+| NAT Gateway × 1 (단일 AZ, ADR 0012) | 1 | `$0.0560 / hour` | `$0.0560` | `$40.88` |
+| NAT Gateway Elastic IP × 1 | 1 | `$0.0050 / hour` | `$0.0050` | `$3.65` |
+| ALB (HTTPS) | 1 | `$0.0225 / hour` | `$0.0225` | `$16.43` |
+| ALB LCU (최소 1 LCU 가정) | 1 | `$0.0080 / LCU-hour` | `$0.0080` | `$5.84` |
+| Public IPv4 for internet-facing ALB | 2 | `$0.0050 / IP-hour` | `$0.0100` | `$7.30` |
+| ECS Fargate (1 vCPU / 2 GB, min 2 task 상시) | 2 | `$0.04048/vCPU-h + $0.004445/GB-h` | `$0.0987` | `$72.08` |
+| CloudWatch alarms (target tracking 2 policy × 2 alarm) | 4 | `$0.10 / alarm-month` | `~$0.0005` | `~$0.40` (free-tier 10개 내 가능) |
+| RDS PostgreSQL `db.t4g.micro` Single-AZ | 1 | `$0.021 / hour` | `$0.0210` | `$15.33` |
+| RDS PostgreSQL gp3 storage (20GiB) | 20 GiB | `$0.131 / GB-month` | `$0.0036` | `$2.62` |
+| ElastiCache Redis (cache.t4g.micro) | 1 | `$0.016 / hour` | `$0.0160` | `$11.68` |
+| Secrets Manager (RDS + Redis AUTH + DATABASE_URL + REDIS_URL) | 4 | `$0.40 / secret-month` | `$0.0022` | `$1.60` |
+| ECR `aegis/dashboard-backend` 이미지 스토리지 | ~0.5 GB 추정 | `$0.10 / GB-month` | `~$0.0001` | `~$0.05` |
+| CloudWatch Logs ECS ingest (usage) | usage-based | `$0.76 / GB` | usage | usage |
+| **고정 합계 (상시 가동)** | | | `~$0.2444 / hour` | **`~$178.35 / month`** |
+
+> 상시 가동은 ~$178/월이지만, **데모 운영 패턴(build/destroy 사이클)** 으로 고정 실비를 ~$8~10/월 수준으로 낮출 수 있다. Bedrock 챗봇은 상시 비용이 아니라 호출량 기반으로 별도 증가한다.
+
+### 데모 운영 패턴 비용 (월 2회 × 8h = 16h/월 가동)
+
+| 비용 항목 | 시간당 | 16h/월 비용 |
+| --- | ---: | ---: |
+| NAT Gateway + EIP | `$0.0610` | `$0.98` |
+| ALB + LCU + Public IPv4 | `$0.0405` | `$0.65` |
+| ECS Fargate (1 vCPU / 2 GB, min 2 task) | `$0.0987` | `$1.58` |
+| RDS PostgreSQL `db.t4g.micro` compute | `$0.0210` | `$0.34` |
+| RDS PostgreSQL gp3 storage (20GiB) | (월정액) | `$2.62` |
+| ElastiCache Redis | `$0.0160` | `$0.26` |
+| Secrets Manager (월정액, destroy로 삭제) | (월정액) | `$0.80` (켜진 동안만 비례) |
+| Route53 + Cognito + ACM | `$0.0007` | `$0.50` |
+| **고정 합계 (데모 운영)** | | **`~$7.73 / month`** |
+
+### 사용량 기반 비용 (관제 트래픽 규모 가정)
+
+| 비용 항목 | 단가 | 가정 | 예상 월 |
+| --- | ---: | --- | ---: |
+| CloudFront data out | `$0.085 / GB` (1TB 무료 후) | < 5GB/월 (관제 SPA) | `~$0.00` (무료 티어 내) |
+| CloudFront requests | `$0.0075 / 10k HTTPS` | < 100k/월 | `~$0.08` |
+| Lambda data processor invocations | `$0.20 / 1M` (1M 무료) | < 200k/월 | `~$0.00` (무료 티어 내) |
+| Lambda GraphAggregator5m invocations | `$0.20 / 1M` (1M 무료) | 5분 주기 = ~8,640/월 | `~$0.00` (무료 티어 내) |
+| Lambda notifier invocations (DDB Streams) | `$0.20 / 1M` | < 200k/월 | `~$0.00` |
+| Lambda report-generator invocations | `$0.20 / 1M` | 팀원/후속 LLM 보고서 도입 시 3 호출/일 × 30 = 90/월 | `~$0.00` |
+| Lambda compute (GB-sec) | `$0.0000166667 / GB-sec` (400k 무료) | < 100k GB-sec | `~$0.00` |
+| Bedrock chatbot resolve — Nova Micro input (ADR 0035) | `$0.035 / 1M tokens` | 720 queries/월 × 1.2k input | `~$0.03` |
+| Bedrock chatbot resolve — Nova Micro output (ADR 0035) | `$0.14 / 1M tokens` | 720 queries/월 × 150 output | `~$0.02` |
+| Bedrock chatbot fast — Nova Pro input (ADR 0035) | `$0.80 / 1M tokens` | 600 queries/월 × 1.2k input | `~$0.58` |
+| Bedrock chatbot fast — Nova Pro output (ADR 0035) | `$3.20 / 1M tokens` | 600 queries/월 × 300 output | `~$0.58` |
+| Bedrock chatbot precise — Nova Pro input (ADR 0035) | `$0.80 / 1M tokens` | 120 queries/월 × 1.5k input | `~$0.14` |
+| Bedrock chatbot precise — Nova Pro output (ADR 0035) | `$3.20 / 1M tokens` | 120 queries/월 × 400 output | `~$0.15` |
+| DynamoDB on-demand write | `$1.25 / 1M WCU` | factory-a 3s/20s 주기 = ~120k write/월 | `~$0.15` |
+| DynamoDB GRAPH#5M write/read/storage | on-demand/storage | 3공장 기준 5분 bucket ~25,920 write/월 + < 1GB | `~$0.03` |
+| DynamoDB on-demand read | `$0.25 / 1M RCU` | Backend 캐시 hit으로 read 감소 ~50k/월 | `~$0.013` |
+| DynamoDB Streams read | `$0.02 / 100k stream read` | ~120k/월 | `~$0.024` |
+| DynamoDB storage (LATEST + HISTORY + daily-report) | `$0.25 / GB-month` | < 2GB | `~$0.50` |
+| S3 `aegis-bucket-data` storage (raw + processed + reports) | `$0.025 / GB-month` | factory-a 1개월 누적 ~3GB | `~$0.08` |
+| S3 processed_agg PUT/storage | S3 Standard | GRAPH#5M 보조 JSON, 월 수만 건 미만 | `~$0.02` |
+| S3 dashboard-web bucket storage | `$0.025 / GB-month` | < 50MB | `~$0.00` |
+| S3 PUT requests | `$0.005 / 1k` | ~120k/월 | `~$0.60` |
+| S3 GET requests | `$0.0004 / 1k` | < 100k/월 | `~$0.04` |
+| Route53 DNS queries | `$0.40 / 1M` (첫 1B) | < 100k/월 | `~$0.04` |
+| X-Ray traces | `$5.00 / 1M traces` (100k 무료) | < 100k/월 | `~$0.00` |
+| NAT Gateway data processing (ECR pull + Bedrock + Secrets) | `$0.056 / GB` | < 5GB/월 | `~$0.28` |
+| Lambda CloudInfraFastCollector invocations | `$0.20 / 1M` (1M 무료) | 재생성 root 가동 시 1분 주기 = ~43,200/월 | `~$0.00` (무료 티어 내) |
+| Lambda CloudInfraSlowCollector invocations | `$0.20 / 1M` (1M 무료) | 재생성 root 가동 시 5분 주기 = ~8,640/월 | `~$0.00` (무료 티어 내) |
+| CloudWatch GetMetricData API (collector) | `$0.01 / 1k metrics` | 재생성 root 가동 시 metric 수 × 51,840 호출/월 | `~$0.10~0.40` |
+| EventBridge Scheduler invocations (collector) | `$1.00 / 1M` (14M 무료) | 재생성 root 가동 시 ~51,840/월 | `~$0.00` (무료 티어 내) |
+| **사용량 합계 (factory-a 단독)** | | | **`~$4.80 / month`** |
+
+> Cloud Infra collector는 현재 `infra/data-dashboard` destroy로 비활성이다. 재생성 root 가동 시 사용량 ~$0.3~1.0/월 추가(주로 CloudWatch GetMetricData API). Lambda/Scheduler는 무료 티어 내, 고정 시간 비용 없음.
+
+> 외부 도메인 등록비: Gabia `.com` 연 ~₩15,000 / `.kr` 연 ~₩20,000 (별도, AWS 청구서에 포함되지 않음).
+
+### Phase 1 합계 (factory-a 단독, 추정)
+
+| 운영 패턴 | 고정 | 사용량 | 합계 |
+| --- | ---: | ---: | ---: |
+| 상시 가동 (24/7) | ~$178.35/월 | ~$4.80/월 | **`~$183.15 / month`** |
+| 데모 운영 (월 2회 × 8h) | ~$7.73/월 | ~$4.80/월 | **`~$12.53 / month`** |
+| destroy 후 (Step 9.5 이전 — Route53 hosted zone + RDS snapshot) | snapshot/storage 기준 + hosted zone $0.50/월 | ~$0.60/월 | Route53 hosted zone은 영구 자원 (Step 7.5 분리). snapshot 크기에 따라 추가 |
+| destroy 후 (Step 9.5 migration 완료 후 — permanent root 잔여) | permanent root 고정 $0.50/월 + ECR ~$0.05/월 | ~$0.05/월 | **~$0.50~0.55/월 (Route53 $0.50 + ECR ~$0.05)**. Cognito/DDB/S3-web/CloudFront/ACM/IAM: ~$0.00. 상세는 아래 표 참조 |
+
+factory-b/c 추가 시 IoT 메시지 수 비례 증가. 사용량 항목 중 S3 PUT/DDB write/Bedrock token이 메시지 수와 챗봇 사용량에 가장 민감.
+
+### infra/data-dashboard destroy 후 잔여 비용 (Step 9.5 permanent root 분리 완료 후)
+
+Step 9.5 migration 완료 후 `infra/data-dashboard`를 destroy해도 아래 리소스는 `infra/data-dashboard-permanent/`와 `infra/data-dashboard-dns/`가 관리하므로 삭제되지 않는다.
+
+| 영구 root | 리소스 | 월 비용 | 비고 |
+| --- | --- | ---: | --- |
+| `infra/data-dashboard-dns/` | Route53 hosted zone `aegis-pi.cloud` | `$0.50` | 고정 (Step 7.5 분리 완료) |
+| `infra/data-dashboard-permanent/` | Cognito User Pool (0 MAU) | `$0.00` | 50,000 MAU 무료 티어 |
+| `infra/data-dashboard-permanent/` | ECR `aegis/dashboard-backend` 이미지 스토리지 (~0.5 GB) | `~$0.05` | `$0.10/GB-month` |
+| `infra/data-dashboard-permanent/` | DynamoDB `aegis-daily-report` (빈 테이블, on-demand, PITR enabled) | `$0.00` | 0 req → WCU/RCU 0. PITR은 데이터 증가 시 사용량 기반 |
+| `infra/data-dashboard-permanent/` | S3 web bucket `kjw-aegis-data-web` (< 50 MB) | `~$0.00` | usage-based 소량 |
+| `infra/data-dashboard-permanent/` | CloudFront distribution (비가동 시) | `~$0.00` | HTTP request 0이면 $0 |
+| `infra/data-dashboard-permanent/` | ACM CloudFront cert (us-east-1) | `$0.00` | 무료 |
+| `infra/data-dashboard-permanent/` | GitHub OIDC IAM roles (ECR push + web deploy) | `$0.00` | IAM 무료 |
+| **합계** | | **`~$0.55/월`** | Route53 $0.50 + ECR ~$0.05 |
+
+> RDS PostgreSQL final snapshot은 Step 9.5 이후에도 destroy 시 S3 snapshot storage로 발생. Step 10에서 snapshot restore runbook / automation 완료 후 snapshot 삭제 가능.
+
+> **참고**: ADR 0017 이후 17_expansion_roadmap.md의 Phase 1 비용 추정은 RDS PostgreSQL 기준으로 낮아졌다. 본 표가 실비 산정 기준이다.
+
+### 절감 옵션 (이미 적용된 것 + 추가 후보)
+
+- ✅ **데모 운영 패턴 (build/destroy 사이클)**: 상시 ~$125/월 → ~$8~10/월 (90%+ 절감). 핵심 절감 수단
+- ✅ **NAT GW 1개로 제한 (단일 AZ)**: 2 AZ × $45 → 1 × $45 (50% 절감, 가용성은 데모용 한정)
+- ✅ **RDS PostgreSQL Single-AZ**: Multi-AZ 대비 1개 instance만 사용 (Phase 2에서 활성화 검토)
+- ✅ **Redis 단일 노드 (cluster mode 비활성화)**: 비용 ~30% 절감
+- **Fargate Spot 사용**: stateless ECS task이면 ~70% 절감 가능 (Phase 2에서 검토)
+- **VPC Endpoint (Interface) for Bedrock/Secrets/ECR**: NAT data processing 비용 우회. 단, Interface endpoint 자체 ~$7/월/endpoint → 손익분기 확인 후 도입
+- **DynamoDB HISTORY TTL 단축**: 24h → 6h로 줄이면 storage 비용 ↓ (이미 작음, 효용 작음)
+- **CloudFront 최소 TTL 상향**: SPA 빌드 산출물 immutable hash naming + 1년 캐시 → CloudFront 요청 ↓
+- **Bedrock 모델 다운그레이드**: Haiku → Titan Lite (~50% 절감, 단 한국어 품질 검증 필요)
+
 ## 사용량 기반 추가 비용
 
 아래 항목은 켜져 있다는 사실만으로 큰 비용이 발생하지 않거나, 트래픽/요청량에 따라 비용이 달라진다.
@@ -105,15 +308,15 @@ Admin UI Ingress를 끄면 위 비용, 약 `0.0419 USD/hour`를 줄일 수 있�
 | EC2 data transfer | 방향/리전/AZ에 따라 다름 | 현재 별도 대량 전송 없음 |
 | t3 unlimited CPU credit | surplus credit 사용 시 과금 | 2026-05-06 확인 결과 `CPUSurplusCreditsCharged = 0` |
 | S3 request/transfer | request 수와 data transfer 기준 | 현재 객체 2개, 366 bytes라 무시 가능 |
-| IoT Core messaging/rules | 메시지와 rule action 사용량 기준 | 현재 IoT 리소스는 삭제됨. rebuild 후 테스트 메시지 수준부터 재검증 |
-| AMP ingest/storage/query | ingested samples, stored metrics, query samples 기준 | 현재 AMP workspace는 삭제됨. rebuild 후 Prometheus Agent remote_write가 시작되면 사용량 기반 비용 발생 가능 |
-| Grafana AMP query | AMP query samples 기준 | 현재 Hub Grafana는 삭제됨. rebuild 후 dashboard/Explore 사용량에 따라 AMP query 비용 증가 가능 |
+| IoT Core messaging/rules | 메시지와 rule action 사용량 기준 | Foundation/IoT 리소스는 2026-05-15 rebuild 후 active. 메시지 수와 Rule action 사용량에 따라 증가 |
+| AMP ingest/storage/query | ingested samples, stored metrics, query samples 기준 | AMP workspace는 active. Prometheus Agent remote_write와 query 사용량에 따라 증가 |
+| Grafana AMP query | AMP query samples 기준 | Hub Grafana는 active. dashboard/Explore 사용량에 따라 AMP query 비용 증가 |
 | Grafana image/chart pull | NAT Gateway data processing 기준 | build/upgrade 시 container image와 chart pull 트래픽이 발생할 수 있음 |
 | ACM public certificate | public certificate 기준 | ALB에 연결하는 public ACM certificate 자체는 과금 없음 |
 | Route53 DNS queries | query 수 기준 | Hosted Zone 고정 비용 외 DNS query가 늘면 사용량 기반 비용 발생 |
 | ALB LCU | new connections, active connections, processed bytes, rule evaluations 기준 | Admin UI Ingress를 켠 뒤 관리자 접속량이 늘면 증가 |
-| KMS API requests | request 수 기준, 월 20,000 request free tier 이후 과금 | active EKS key 없음. AEGIS keys는 scheduled deletion 상태 |
-| CloudWatch Logs ingest/storage | ingest bytes와 저장량 기준 | active EKS cluster 없음. retained log group이 있으면 별도 확인 필요 |
+| KMS API requests | request 수 기준, 월 20,000 request free tier 이후 과금 | Hub/Foundation active 상태 기준으로 실제 key 사용량은 Cost Explorer로 확인 |
+| CloudWatch Logs ingest/storage | ingest bytes와 저장량 기준 | Hub workloads와 재생성 root runtime 로그량에 따라 증가 |
 
 ### Destroy 이후 비용 기준
 
@@ -178,12 +381,17 @@ scripts/destroy/destroy-hub.sh
 
 - `infra/hub`에 AWS 리소스가 추가, 삭제, 크기 변경됨
 - `infra/foundation`에 AMP, ECR, S3 lifecycle, IoT Rule, DynamoDB, KMS 같은 리소스가 추가됨
+- `infra/data-dashboard/`에 ECS, RDS PostgreSQL, Redis, NAT, ALB, Lambda 같은 리소스가 추가·변경됨
 - `docs/issues/` 또는 `docs/planning/`에 새 상시 운영 AWS 컴포넌트가 추가됨
-- NAT Gateway 수, node instance type, node desired size, EBS 크기, EKS Kubernetes support tier가 바뀜
+- NAT Gateway 수, node/task/DB instance type, RDS allocated storage, EKS Kubernetes support tier가 바뀜
 - Dashboard VPC, ALB, WAF, Cognito, CloudFront, Route53 같은 외부 접근 경로가 추가됨
+- ECS task desired_count, Fargate Spot 도입 여부, RDS PostgreSQL Multi-AZ 활성화 여부가 바뀜
+- Bedrock 모델 변경 (Haiku → Sonnet 등) 또는 일간 보고서 빈도가 늘어남
+- API Gateway, Lambda(invocation/GB-sec), DynamoDB(read/write/storage), DynamoDB Streams, X-Ray 사용량이 baseline 추정과 크게 달라짐 (ADR 0007/0008/0009/0012~0017 영역)
 - Prometheus/AMP/Grafana/CloudWatch Logs처럼 관측 계층의 수집량 또는 저장량 기준이 바뀜
 - Prometheus Agent scrape job, scrape interval, annotated pod 수집 대상이 늘어남
 - Grafana dashboard 수, refresh interval, Explore 사용량, datasource 수가 늘어남
+- Phase 2 진입 (Timestream, Kinesis, OpenSearch, Multi-AZ) — `docs/planning/17_expansion_roadmap.md` 트리거 충족
 
 비용 갱신 시 기록할 내용:
 
@@ -197,7 +405,7 @@ scripts/destroy/destroy-hub.sh
 
 ## 가격 출처
 
-2026-05-06 기준 AWS Pricing API와 공식 가격 문서를 함께 확인했고, 현재 리소스 상태는 2026-05-08 destroy 검증 결과로 갱신했다.
+2026-05-19 기준 AWS Price List API와 공식 가격 문서를 함께 확인했고, 현재 리소스 상태는 2026-05-20 세션 스냅샷의 2026-05-15 rebuild 후 Hub/Foundation/IoT/Admin UI 활성 상태로 갱신했다.
 
 - Amazon EKS pricing: https://aws.amazon.com/eks/pricing/
 - Amazon EC2 On-Demand pricing: https://aws.amazon.com/ec2/pricing/on-demand/
@@ -209,3 +417,10 @@ scripts/destroy/destroy-hub.sh
 - Elastic Load Balancing pricing: https://aws.amazon.com/elasticloadbalancing/pricing/
 - Amazon Route53 pricing: https://aws.amazon.com/route53/pricing/
 - AWS Certificate Manager pricing: https://aws.amazon.com/certificate-manager/pricing/
+- Amazon ECS Fargate pricing: https://aws.amazon.com/fargate/pricing/
+- Amazon RDS for PostgreSQL pricing: https://aws.amazon.com/rds/postgresql/pricing/
+- Amazon RDS DB instance storage: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Storage.html
+- Amazon ElastiCache pricing: https://aws.amazon.com/elasticache/pricing/
+- Amazon Bedrock pricing: https://aws.amazon.com/bedrock/pricing/
+- AWS Lambda pricing: https://aws.amazon.com/lambda/pricing/
+- Amazon DynamoDB pricing: https://aws.amazon.com/dynamodb/pricing/

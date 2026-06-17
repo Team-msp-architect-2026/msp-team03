@@ -1,36 +1,91 @@
 # M6. Risk Twin + 관제 화면
 
+수정 이력:
+- 2026-06-17 v1.2  이미지 스냅샷 조회를 로컬 구현 표기에서 backend/web 구현·배포 검증 완료 범위로 정정하고, 2026-06-16 `infra/data-dashboard` destroy 후 API/ECS/RDS/Redis/Lambda runtime 비활성 상태를 GitHub Issue Comment Draft에 반영.
+- 2026-06-11 v1.1  ADR 0035 AI 채팅 Nova 모델 평가 결과와 기본 Bedrock tier(resolve Nova Micro / fast+precise Nova Pro) 반영.
+- 2026-06-09 v1.0  System 이미지 스냅샷 조회 페이지 로컬 구현 및 검증 결과 반영.
+- 2026-06-09 v0.9  ADR 0033 챗봇 데이터 QA backend 로컬 구현, Bedrock 2-tier, ECS task role IAM 운영 적용 및 검증 결과 반영.
+- 2026-06-08 v0.8  Cloud Infra 일간 보고서 접근 제어/selector 배포 결과 및 GitHub Issue Comment Draft 검증 수치 갱신.
+- 2026-06-08 v0.7  Dashboard history/report export numeric string 정규화와 Reports Word `.docx` 내보내기 배포 결과 및 GitHub Issue Comment Draft 검증 수치 갱신.
+- 2026-06-08 v0.6  Dashboard history delta refresh 최적화 배포 결과와 GitHub Issue Comment Draft 검증 수치 갱신.
+- 2026-06-05 v0.5  Cloud Infra 화면 Datastores 가독성/최근 1시간 상태 흐름 UI 보정과 collector 저장소 용량/메모리 사용률 필드 확장 로컬 구현 및 검증 결과 반영.
+- 2026-06-04 v0.4  GitHub Issue Comment Draft를 Dashboard 전체 배포 범위(Fleet/Factory 카드·센서·타임라인, Cloud Infra 화면, 보고서 조회, RBAC)로 확장하고 검증 수치를 최신 배포(backend `sha-e96bf81`/ECS revision 37, pytest 98 passed)로 갱신.
+- 2026-06-04 v0.3  Dashboard RBAC 사용자 관리 구현/배포 결과와 GitHub Issue Comment Draft 추가.
+- 2026-05-20 v0.2  Risk Score 기준을 안전점수 방식(100=가장 안전, 0=가장 위험)으로 정정.
+
 > **마일스톤 목표**: 수집된 데이터를 기반으로 Risk Score를 계산하고 본사 관제 담당자가 사용할 Dashboard VPC 기반 관제 화면을 완성한다.
 > M2(Hub-Spoke 연결)와 M4(데이터 플레인) 완료 후 진행한다.  
 > 이 마일스톤이 완료되면 공장 상태 변화 → Risk Score 변화 → 관제 화면 반영이 end-to-end로 동작한다.
-> 외부 관리자 화면은 Grafana public 노출이 아니라 Route53/ALB/WAF/Auth 뒤의 Dashboard Web/API를 기본 방향으로 한다.
+> 외부 관리자 화면은 Grafana public 노출이 아니라 Route53/CloudFront/ALB/Auth 뒤의 Dashboard Web/API를 기본 방향으로 한다. WAF/Shield는 후속 보안 강화 트리거로 둔다.
 
 ---
 
-## Issue 1 - [Risk/Engine] Risk Score Engine 구현 (가중치 초기안)
+## 2026-05-13 멘토링 반영: 일일 운영 리포트 최소 포함
+
+### 기존 초안
+
+기존 M6 초안은 Risk Score Engine과 Dashboard Web/API를 구현해 공장별 안전/주의/위험 상태를 보여주는 데 집중했다. 최신 기준에서는 별도 Risk Score Engine 파드 대신 Lambda data processor 내부 Risk 계산 로직과 Dashboard Web/API를 구현한다.
+
+```text
+IoT Core
+  -> Lambda data processor
+  -> DynamoDB LATEST/HISTORY + S3 processed
+  -> Dashboard Web/API
+```
+
+### 변경 이유
+
+멘토링에서는 CI/CD와 ArgoCD가 필요한 이유를 더 명확히 설명해야 한다는 피드백이 있었다. 단순 대시보드 표시만으로는 이후 모델/설정 업데이트와 배포 파이프라인의 필요성이 약해질 수 있다.
+
+### 보강 방향
+
+MVP에는 완전 자동화된 고도화 리포트가 아니라, 하루 1회 운영 리포트 초안을 생성하는 최소 기능을 포함하는 방향을 검토한다.
+
+```text
+S3 raw / processed / latest
+  + 사고 이미지 또는 이상 이벤트
+  + 최근 Risk Score 변화
+  -> LLM/VLM 기반 요약
+  -> 일일 운영 리포트 초안
+  -> 모델/설정 업데이트 후보
+  -> 운영자 승인 후 GitOps 배포
+```
+
+MVP에서 제외하는 범위는 유지한다.
+
+- 자동 모델 재학습
+- 운영자 승인 없는 모델/설정 자동 교체
+- 장기 이력 기반 고급 분석
+- 복잡한 자연어 질의 시스템
+
+즉, 일일 리포트는 자동 조치 시스템이 아니라 Edge AI 판단 결과를 다시 검토하고 모델/설정 업데이트 필요성을 발견하는 운영 피드백 루프다.
+
+---
+
+## Issue 1 - [Risk/Lambda] Lambda Risk 계산 로직 구현 (가중치 초기안)
 
 ### 🎯 목표 (What & Why)
 
-정규화된 데이터를 입력받아 공장별 Risk Score(0~100)를 계산하고 상태(안전/주의/위험)를 판정하는 엔진을 구현한다.  
-이 이슈에서는 초기 하드코딩 가중치와 임계시간을 기준으로 먼저 동작 가능한 엔진을 만든다.  
+IoT Core 메시지를 처리하는 Lambda data processor 안에 공장별 Risk Score(0~100)를 계산하고 상태(안전/주의/위험)를 판정하는 로직을 구현한다.
+이 이슈에서는 초기 하드코딩 가중치와 임계시간을 기준으로 먼저 동작 가능한 계산 로직을 만든다.
 설정 파일 연동과 세부 제어는 다음 이슈에서 확장한다.
 
 ### ✅ 완료 조건 (Definition of Done)
 
-- [ ] Risk Score Engine 구현 (`risk` 네임스페이스)
+- [ ] Lambda data processor의 Risk 계산 로직 구현
 - [ ] 가중치 초기안 하드코딩 적용
-  - 온도 이상: `+15`
-  - 습도 이상: `+10`
-  - 센서 무수신: `+15`
-  - 엣지 에이전트 이상: `+15`
-  - 노드 이상: `+20`
-  - 카메라 이상: `+10`
-  - 마이크 이상: `+10`
-  - 데이터 수집 파이프라인 이상: `+15`
+  - 온도 이상: `-15`
+  - 습도 이상: `-10`
+  - 센서 무수신: `-15`
+  - 엣지 에이전트 이상: `-15`
+  - 노드 이상: `-20`
+  - 카메라 이상: `-10`
+  - 마이크 이상: `-10`
+  - 데이터 수집 파이프라인 이상: `-15`
 - [ ] 위험도 구간 적용
-  - 안전: `0~39`
-  - 주의: `40~69`
-  - 위험: `70~100`
+  - 안전: `85~100`
+  - 주의: `50~84`
+  - 위험: `0~49`
 - [ ] 이상 판정 임계시간 적용
   - 센서: 3분
   - 엣지 에이전트: 2분
@@ -42,9 +97,9 @@
 
 ### 🔍 Acceptance Criteria
 
-- Risk Score Engine 파드 `Running`
-- 정상 입력 시 Risk Score 0~39 범위 출력
-- 노드 이상 입력 시 Score `+20` 반영 확인
+- Lambda data processor 실행 및 CloudWatch Logs 정상 처리 확인
+- 정상 입력 시 Risk Score 85~100 범위 출력
+- 노드 이상 입력 시 Score `-20` 반영 확인
 - 하드코딩된 초기 가중치/임계시간 기준으로 점수 계산 동작 확인
 - 3개 공장 각각 독립적으로 Risk Score 계산 확인
 
@@ -54,12 +109,12 @@
 
 ### 🎯 목표 (What & Why)
 
-M1에서 작성한 `runtime-config.yaml` 구조를 Risk Score Engine이 실제로 읽어 동작하도록 연결한다.  
+M1에서 작성한 `runtime-config.yaml` 구조를 Lambda data processor의 Risk 계산 로직이 실제로 읽어 동작하도록 연결한다.
 `display` / `risk_enabled` 필드 제어가 관제 화면 표시와 Risk 계산에 실제로 반영되어야 한다.
 
 ### ✅ 완료 조건 (Definition of Done)
 
-- [ ] Risk Score Engine에서 `runtime-config.yaml` 읽기 로직 구현
+- [ ] Lambda data processor에서 `runtime-config.yaml` 읽기 로직 구현
   - ConfigMap 또는 파일 마운트 방식
 - [ ] `risk_enabled: false` 필드는 점수 계산에서 제외 동작 확인
 - [ ] `display: false` 필드는 관제 화면에서 숨김 처리 동작 확인
@@ -93,7 +148,7 @@ Risk Score 계산에서 온도/습도 이상 판정에 사용할 기준값 초�
 ### 🔍 Acceptance Criteria
 
 - 온도/습도 초안 기준값이 `runtime-config.yaml`에 반영됨
-- Risk Score Engine에서 기준값 기반 이상 판정 동작 확인
+- Lambda data processor에서 기준값 기반 이상 판정 동작 확인
 
 ---
 
@@ -101,9 +156,9 @@ Risk Score 계산에서 온도/습도 이상 판정에 사용할 기준값 초�
 
 ### 🎯 목표 (What & Why)
 
-Risk Score Engine의 공식 출력 구조를 구현한다.  
+Lambda data processor의 공식 Risk Twin 출력 구조를 구현한다.
 관제 화면과 이후 확장 서비스(LLM 보고서 등)가 이 출력을 기준으로 데이터를 읽는다.  
-MVP 단계에서는 Risk Twin 결과를 latest status store에 기록하고, 필요하면 Prometheus 호환 메트릭도 함께 노출한다. Dashboard Web/API는 latest status store와 processed S3를 read-only로 조회한다.
+MVP 단계에서는 Risk Twin 결과를 DynamoDB LATEST/HISTORY와 S3 processed에 기록한다. Dashboard Web/API는 DynamoDB와 S3 processed를 read-only로 조회한다.
 
 ### ✅ 완료 조건 (Definition of Done)
 
@@ -128,8 +183,7 @@ MVP 단계에서는 Risk Twin 결과를 latest status store에 기록하고, 필
   - `temp_high`, `humidity_high`, `sensor_no_data`
   - `edge_agent_down`, `node_not_ready`, `camera_down`, `mic_down`
   - `pipeline_delay`, `pipeline_no_data`
-- [ ] 출력 결과를 latest status store에 기록
-- [ ] 필요 시 Prometheus 호환 메트릭으로도 노출
+- [ ] 출력 결과를 DynamoDB LATEST/HISTORY와 S3 processed에 기록
   - 예: `risk_score`, `risk_status`, `risk_cause_weight`, `risk_cause_rank`
 - [ ] Dashboard Web/API에서 조회 가능한 구조로 정리
 
@@ -138,7 +192,7 @@ MVP 단계에서는 Risk Twin 결과를 latest status store에 기록하고, 필
 - Risk Twin 출력 JSON 구조 유효성 확인
 - Top 3 원인이 가중치 기여도 순으로 정렬됨 확인
 - `event_timestamp`와 `processed_at` 둘 다 기록됨 확인
-- Risk Twin 결과가 latest status store에 반영됨 확인
+- Risk Twin 결과가 DynamoDB LATEST/HISTORY에 반영됨 확인
 - 3개 공장 각각 독립 출력 확인
 
 ---
@@ -149,12 +203,12 @@ MVP 단계에서는 Risk Twin 결과를 latest status store에 기록하고, 필
 
 관제 담당자가 가장 먼저 보는 상단 위험도 카드를 Dashboard Web에서 구현한다.
 각 공장의 현재 상태, 변화 방향, 이상 시스템 개수를 한눈에 파악할 수 있어야 한다.  
-이 패널은 latest status store의 Risk Twin 결과를 기준으로 구성한다.
+이 패널은 DynamoDB LATEST의 Risk Twin 결과를 기준으로 구성한다.
 
 ### ✅ 완료 조건 (Definition of Done)
 
 - [ ] Dashboard Web/API 생성 (본사 관제 메인)
-- [ ] Route53 -> ALB -> WAF/Auth -> Dashboard 접근 경로 구성
+- [ ] Route53 -> CloudFront/ALB -> Auth -> Dashboard 접근 경로 구성 (WAF/Shield는 후속 보안 강화)
 - [ ] 공장별 위험도 카드 패널 구현 (3개 공장)
   - 공장명 (`factory-a`, `factory-b`, `factory-c`)
   - 현재 상태 (안전 🟢 / 주의 🟡 / 위험 🔴)
@@ -186,12 +240,12 @@ MVP 단계에서는 Risk Twin 결과를 latest status store에 기록하고, 필
 - [ ] 센서 현황 패널 구현 (중단 왼쪽)
   - 공장별 현재 온도 / 현재 습도
   - 최근 짧은 추세선 (공장별 미니 차트)
-  - 데이터 소스: latest status store 및 processed S3
+  - 데이터 소스: DynamoDB LATEST 및 S3 processed
 - [ ] 이상 시스템 목록 패널 구현 (중단 오른쪽)
   - 이상 발생 시스템 목록 (센서 / 엣지 에이전트 / 노드 / 카메라 / 마이크 / 파이프라인)
   - 정렬 기준: 1차 공장 위험도 순 (위험 > 주의 > 안전), 2차 최신 발생 순
   - 목록 표시 방식: 구성요소 개수형 (메인 카드 기준)
-  - 데이터 소스: latest status store (`top_causes`, 상태 값)
+  - 데이터 소스: DynamoDB LATEST (`top_causes`, 상태 값)
 
 ### 🔍 Acceptance Criteria
 
@@ -245,11 +299,11 @@ MVP 단계에서는 Risk Twin 결과를 latest status store에 기록하고, 필
 ### ✅ 완료 조건 (Definition of Done)
 
 - [ ] 시나리오별 Risk Score 변화 확인
-  - 시나리오 1: 정상 상태 → Risk Score 0~39 (안전)
-  - 시나리오 2: 온도 이상 발생 → Score +15 반영 확인
-  - 시나리오 3: 노드 이상 발생 → Score +20 반영, 위험 상태 전환 확인
+  - 시나리오 1: 정상 상태 → Risk Score 85~100 (안전)
+  - 시나리오 2: 온도 이상 발생 → Score -15 반영 확인
+  - 시나리오 3: 노드 이상 발생 → Score -20 반영, 위험 상태 전환 확인
   - 시나리오 4: 복수 이상 동시 발생 → 합산 점수 확인
-  - 시나리오 5: 이상 해소 → Score 감소 및 상태 복구 확인
+  - 시나리오 5: 이상 해소 → Score 상승 및 상태 복구 확인
 - [ ] 기준값 초과 시 위험도 카드 상태 변화 확인
 - [ ] 각 시나리오에서 Top 3 원인 올바르게 출력 확인
 - [ ] 관제 화면 변화(카드 색상, 이상 목록, 로그)가 시나리오와 일치 확인
@@ -265,3 +319,28 @@ MVP 단계에서는 Risk Twin 결과를 latest status store에 기록하고, 필
 - Dashboard 관제 화면이 Score 변화에 따라 갱신
 - Top 3 원인이 가중치 순으로 올바르게 출력됨
 - M6 전체 완료 기준: Spoke 상태 변화 → Risk Score → 관제 화면 end-to-end 동작
+
+## 2026-05-14 수정 방향
+
+이 문서의 이전 `Risk Score Engine` 표현은 최신 MVP 기준에서 별도 장기 실행 컨테이너 서비스/파드를 의미하지 않는다.
+
+Risk 계산은 Lambda data processor 내부 로직으로 구현하고, 결과 저장과 Dashboard 조회는 아래 계약을 따른다.
+
+```text
+Lambda data processor
+  -> DynamoDB LATEST
+  -> DynamoDB HISTORY
+  -> S3 processed
+Dashboard Web/API
+  -> DynamoDB + S3 processed read-only 조회
+```
+
+M6 구현 시 `risk-score-engine` ECR 이미지나 Kubernetes 파드 완료 조건은 사용하지 않는다.
+
+## GitHub Issue Comment Draft
+
+- 상태: 부분 완료 (관제 화면, 챗봇 backend/web, 이미지 스냅샷 조회 backend/web 구현·배포 검증 완료. 2026-06-16 비용 절감을 위해 `infra/data-dashboard` 재생성 root는 destroy 상태. 인증 사용자 수기 질의·실시간 시나리오 검증 후속)
+- 진행 요약: Dashboard VPC 기반 관제 화면을 운영 배포까지 완료했다. Fleet·Factory·Cloud Infra·S3 `reports/daily/` 기반 보고서 조회/Word `.docx` 내보내기·Cognito/RDS RBAC와 `/admin/users`를 제공한다. 추가로 ADR 0033/0035 기준 `/chat/query` backend를 배포해 RBAC 이후 DDB/S3 evidence를 만들고, Bedrock Nova tier(resolve Nova Micro / fast+precise Nova Pro) 또는 rule fallback으로 답변한다. dashboard-web에는 Workspace `AI 채팅` 독립 페이지를 운영 배포했다. System 영역에는 S3 `image_snapshot/factory_id=.../yyyy=.../mm=.../dd=.../hh=.../` 이미지를 시간대별로 확인하는 `/image-snapshots` 페이지와 backend presigned URL API를 구현했다. 현재 API/ECS/RDS/Redis/Lambda runtime은 destroy 상태이므로 다음 수기 검증 전 `scripts/build/build-data-dashboard.sh`가 필요하다.
+- 변경/확인: `apps/dashboard-backend/`(routers: factories·reports·ws·cloud_infra·admin_users·auth_me·chat·image_snapshots / services: ddb·redis·s3·cloud_infra·metadata·rbac_seed·cognito_admin·chat·bedrock / deps: auth·rbac / db RBAC 모델; history `since` delta query와 window별 기본 limit; history/GRAPH#5M numeric string 정규화; `cloud-infra` 보고서 system-view 권한 분리; `/chat/query` intent/time parser·Evidence·Bedrock explain·rule fallback; `/image-snapshots` system-view 권한·S3 presigned URL), `apps/dashboard-web/`(Fleet·Factory·Reports·CloudInfra·ImageSnapshots·AdminUsers·Login·Callback; history delta merge/dedupe, Factory header 10m trend, WebSocket LATEST chart append; numeric string 정규화; Reports Markdown parser 공용화와 실제 `.docx` export; system-view 사용자용 Cloud Infra report selector), `apps/cloud-infra-collector/`, `infra/data-dashboard/`(ECS Auto Scaling·task role Cognito/Bedrock/S3 image_snapshot read 권한·metadata/Bedrock env), 관련 ADR 0025/0026/0028/0029/0030/0031/0033, `docs/ops/15_aws_cost_baseline.md`, `docs/ops/22_data_dashboard_vpc_runbook.md`.
+- 검증: backend `pytest -q` 209 passed, dashboard-web `npm run lint` 통과, `npm test -- --run` 82 passed, `npm run build` 통과(Vite chunk warning only), `terraform -chdir=infra/data-dashboard fmt -check` 통과, `terraform -chdir=infra/data-dashboard validate` 통과, `git diff --check` 통과. Bedrock IAM targeted apply 완료, `bedrock:InvokeModel`/`bedrock:GetInferenceProfile` simulation allowed. dashboard-backend/web GitHub Actions success, backend image `sha-990ab6a` push, Terraform apply로 ECS task definition revision 41 등록, service rollout COMPLETED, desired/running 2, target 2개 HEALTHY, post-apply plan No changes. 운영 API `/healthz` ok, `/readyz` dynamodb/redis/rds_metadata ok, `/chat/query` OpenAPI 노출 및 비인증 401, dashboard `/chat` HTTP 200.
+- 후속: 인증 사용자로 실제 `/chat` Bedrock 질의 수기 확인, Cloud Infra UI 보정 배포/수기 캡처, Cognito super_admin bootstrap 후 실제 사용자 생성/권한 수정/삭제 수기 확인, factory-a Edge Agent 재활성화 후 IoT → DDB → Redis → WebSocket 실시간 시나리오(Issue 8) 검증, LLM 일간 보고서 생성기(ADR 0016), 알림룰 관리 화면.

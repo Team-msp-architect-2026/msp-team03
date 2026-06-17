@@ -1,7 +1,7 @@
 # Architecture ADR Backlog
 
 상태: draft
-기준일: 2026-05-09
+기준일: 2026-05-14
 
 ## 목적
 
@@ -15,11 +15,11 @@
 
 | 문서 | 관련 내용 |
 | --- | --- |
-| `docs/planning/05_decision_rationale.md` | K3s + Edge Agent + IoT Core, S3 raw data lake, EKS Risk Service, Dashboard 방향 같은 주요 선택 이유 |
+| `docs/planning/05_decision_rationale.md` | K3s + Edge Agent + IoT Core, S3 raw data lake, Lambda data processor, Dashboard 방향 같은 주요 선택 이유 |
 | `docs/planning/07_dashboard_vpc_extension_plan.md` | Dashboard VPC와 Processing VPC 분리, Dashboard가 Tailscale/ArgoCD/EKS API에 직접 접근하지 않는 기준 |
 | `docs/planning/09_m1_eks_vpc_decision_record.md` | 기존 Hub EKS/VPC MVP 기준, public/private subnet, EKS endpoint, Terraform root 분리 |
 | `docs/planning/12_two_vpc_mvp_architecture_decision.md` | 1번 Data/Dashboard VPC, 2번 Control/Management VPC 배치 합의 |
-| `docs/issues/M4_data-plane.md` | 데이터 플레인/Edge Agent 구현 후보와 완료 조건 |
+| `docs/issues/edit.md` | 기존 issue 문서에 나중에 반영할 데이터 플레인/Edge Agent 수정 후보 |
 
 ## ADR 후보 목록
 
@@ -34,7 +34,7 @@
 | ADR-CAND-007 | 공장 로컬 ArgoCD와 Hub ArgoCD의 역할을 어떻게 나눌지 | 초기 검토안은 factory-a 로컬 ArgoCD와 EKS Hub ArgoCD의 ownership 분리였다. 최신 목표는 ADR-CAND-013의 Hub ArgoCD 중심 이관이며, Local ArgoCD는 전환 기간에만 유지 | `README.md`, `00_current_architecture.md`, `M3_deploy-pipeline.md`, `14_argocd_hub_migration_plan.md` |
 | ADR-CAND-008 | ArgoCD와 Tailscale은 같은 영역에 있어야 하는지 | 둘 다 Hub-Spoke 제어 plane이므로 Control/Management VPC에 둔다 | `12_two_vpc_mvp_architecture_decision.md`, `M2_mesh-vpn-hub-spoke.md` |
 | ADR-CAND-009 | Tailscale 등록 기기 탈취 또는 IP 유출 시 피해 범위를 어떻게 줄일지 | MVP는 Tailscale 유지. 공장별 tag/ACL, 시스템/운영자 권한 분리, K8s RBAC 최소화, DB 접근망 확장 금지 필요 | `12_two_vpc_mvp_architecture_decision.md`, `M2_mesh-vpn-hub-spoke.md` |
-| ADR-CAND-010 | ArgoCD, Grafana, Risk Engine을 한 컴퓨트 영역에 둘지 분리할지 | Risk Engine은 Data/Dashboard VPC로 분리. Grafana/ArgoCD는 Control VPC. 현재 EKS 기반에서는 EC2 단일 배치가 아니라 역할별 workload 배치로 해석 | `12_two_vpc_mvp_architecture_decision.md` |
+| ADR-CAND-010 | ArgoCD, Grafana, Lambda data processor를 한 컴퓨트 영역에 둘지 분리할지 | Risk 계산은 Lambda data processor와 DynamoDB/S3 processed로 분리. Grafana/ArgoCD는 Control VPC. 현재 EKS 기반에서는 EC2 단일 배치가 아니라 역할별 workload 배치로 해석 | `12_two_vpc_mvp_architecture_decision.md` |
 | ADR-CAND-011 | Fleet Controller 개념을 도입할지 | 현재 프로젝트 범위에 없는 개념으로 제외. 공장 목록/설정은 runtime config, Helm values, ApplicationSet, Dashboard API 조회 로직으로 우선 처리 | `12_two_vpc_mvp_architecture_decision.md` |
 | ADR-CAND-012 | VPC 간 직접 연결을 둘지 관리형 서비스/IAM 계약으로 연결할지 | MVP는 직접 연결을 약하게 유지하고 S3/DynamoDB/AMP 같은 관리형 서비스를 우선. 필요 시 Peering/TGW/PrivateLink 후속 검토 | `12_two_vpc_mvp_architecture_decision.md`, `07_dashboard_vpc_extension_plan.md` |
 | ADR-CAND-013 | factory local ArgoCD를 Hub ArgoCD 중심으로 이관할지 | 실무 운영 기준으로는 Hub ArgoCD 중심이 단순하다. factory-a local ArgoCD는 즉시 제거하지 않고 단계적으로 이관하는 방향 | `14_argocd_hub_migration_plan.md` |
@@ -47,7 +47,7 @@ VPC를 하나로 구성할지, 2개 이상으로 나눌지.
 
 ### 대화 중 나온 관점
 
-하나의 VPC로도 MVP 구성은 가능하다. 하지만 ArgoCD/Tailscale/EKS Hub 같은 제어 plane과 Risk Engine/Event Processor/DB 같은 데이터 plane이 같은 private app tier에 섞인다.
+하나의 VPC로도 MVP 구성은 가능하다. 하지만 ArgoCD/Tailscale/EKS Hub 같은 제어 plane과 Lambda data processor, DynamoDB/S3 processed, Dashboard API 같은 데이터 plane이 같은 private app tier에 섞인다.
 
 2 VPC 구조는 작업 분담과 보안 경계를 명확히 한다.
 
@@ -87,7 +87,7 @@ Private App subnet
   - Tailscale
   - Grafana
   - Dashboard API
-  - Risk Engine
+  - Lambda data processor 연동 로직
 
 Private Data subnet
   - RDS
@@ -118,14 +118,12 @@ Private Data subnet
 1번 VPC: Data / Dashboard VPC
   - Dashboard Web
   - Dashboard Backend/API
-  - Event Processor
-  - Risk Engine
+  - Lambda data processor
+  - DynamoDB LATEST/HISTORY
+  - S3 processed
   - Replay Builder
   - Near-miss Aggregator
   - AI / analytics worker
-  - RDS
-  - Redis
-  - OpenSearch
 
 2번 VPC: Control / Management VPC
   - EKS Hub
@@ -141,7 +139,7 @@ Private Data subnet
 ```text
 Grafana와 Dashboard의 역할 분리 기준
 Dashboard API가 읽는 저장소
-Risk Engine과 Dashboard API의 호출 관계
+Lambda data processor 출력과 Dashboard API의 조회 계약
 ```
 
 ## ADR-CAND-004: Dashboard Backend/API 위치
@@ -162,7 +160,7 @@ Control VPC에는 ArgoCD/Tailscale 같은 민감한 제어 컴포넌트가 있�
 Dashboard Backend/API의 책임 범위
 Dashboard API가 읽는 데이터 원천
 Dashboard API가 write 권한을 가질지 여부
-Dashboard API와 Risk Engine을 같은 서비스로 둘지 분리할지
+Dashboard API가 Lambda data processor 출력만 읽을지, 후속 write 권한을 가질지 여부
 ```
 
 ## ADR-CAND-005: Dashboard Web subnet 배치
@@ -232,7 +230,7 @@ prometheus.io/scrape=true annotation이 붙은 Hub 내부 Pod
 
 ```text
 factory-a InfluxDB 센서 데이터
-Risk Engine 결과
+Lambda data processor 결과
 Dashboard latest status
 공장별 Risk Score
 ```
@@ -387,7 +385,7 @@ factory별 tag / ACL 분리
 Tailscale Connector 전용화
 Kubernetes API RBAC 최소화
 DB / 분석 저장소 직접 접근 차단
-Dashboard / Risk Engine 접근을 Tailscale에 의존시키지 않기
+Dashboard / Lambda data processor 접근을 Tailscale에 의존시키지 않기
 ```
 
 ### ADR로 남길 때 결정해야 할 것
@@ -404,7 +402,7 @@ ArgoCD용 ServiceAccount 권한 범위
 
 ### 질문
 
-ArgoCD, Grafana, Risk Engine을 같은 컴퓨트 영역에 둘지 분리할지.
+ArgoCD, Grafana, Lambda data processor를 같은 컴퓨트 영역에 둘지 분리할지.
 
 ### 대화 중 나온 관점
 
@@ -413,15 +411,15 @@ ArgoCD, Grafana, Risk Engine을 같은 컴퓨트 영역에 둘지 분리할지.
 ```text
 ArgoCD + Tailscale: Control / Management
 Grafana: Control / Management observability
-Risk Engine: Data / Dashboard processing
+Lambda data processor: IoT Core 이후 data processing
 ```
 
-현재 repo는 EKS 기반이므로 "한 EC2 안에 모두 배치"보다는 EKS workload와 VPC 역할 분리로 해석하는 편이 맞다.
+현재 repo는 EKS 기반의 Hub 검증 이력이 있지만, 최신 데이터 처리 구현은 EKS workload가 아니라 Lambda와 DynamoDB/S3 processed 중심으로 해석한다.
 
 ### ADR로 남길 때 결정해야 할 것
 
 ```text
-Risk Engine을 별도 EKS cluster에 둘지 ECS/Lambda로 둘지
+Lambda data processor가 한계에 도달했을 때 ECS/EKS worker로 분리할 조건
 Data / Dashboard VPC의 compute 방식
 Control VPC EKS와 Data VPC compute의 배포 책임 경계
 ```
@@ -469,7 +467,7 @@ Data service metrics
   -> Control VPC Grafana가 조회
 
 Risk 결과
-  -> S3 latest / processed 또는 DynamoDB
+  -> DynamoDB LATEST/HISTORY + S3 processed
   -> Dashboard API가 조회
 ```
 
@@ -531,3 +529,20 @@ factory-b/c는 Hub ArgoCD만 사용할지
 Hub/Tailscale 장애 시 변경 freeze 원칙
 local ArgoCD rollback 보존 기간
 ```
+
+## 2026-05-14 수정 방향
+
+ADR 후보에서 `Risk Engine`, `Event Processor`를 별도 장기 실행 컴퓨트로 전제한 표현은 최신 MVP 기준과 다르다.
+
+최신 기준은 아래와 같다.
+
+```text
+IoT Core
+  -> IoT Rule -> S3 raw
+  -> Lambda data processor
+      -> DynamoDB LATEST
+      -> DynamoDB HISTORY
+      -> S3 processed
+```
+
+후속 ADR은 별도 Risk 서비스 도입 여부가 아니라, Lambda data processor가 한계에 도달했을 때 ECS/EKS worker로 분리할 조건을 다루는 방향으로 작성한다.

@@ -6,7 +6,7 @@
 
 | 파일 | 내용 |
 | --- | --- |
-| `00_quick_start.md` | `factory-a` 현재 상태와 빠른 확인 명령 |
+| `00_quick_start.md` | `factory-a`와 Data/Dashboard 현재 상태, 빠른 apply/destroy 진입점 |
 | `01_safe_edge_bootstrap.md` | Safe-Edge 기준선 구축 절차 |
 | `02_self_check.md` | 운영자가 직접 상태를 점검하는 기준 |
 | `03_test_checklist.md` | 장애/데이터/통합 테스트 체크리스트 |
@@ -25,12 +25,15 @@
 | `16_hub_prometheus_amp.md` | Hub Prometheus Agent와 AMP remote_write 운영 기준 |
 | `17_hub_grafana_amp.md` | Hub 내부 Grafana와 AMP datasource 운영 기준 |
 | `18_factory_b_mac_utm_k3s.md` | Mac UTM 기반 `factory-b` 테스트베드 K3s 구성 사전 |
-| `19_factory_c_windows_virtualbox_k3s.md` | Windows VirtualBox 기반 `factory-c` 테스트베드 K3s 구성 사전 |
+| `19_factory_c_windows_virtualbox_k3s.md` | Windows VirtualBox 기반 `factory-c` K3s 구축과 IoT 데이터 송신 검증 |
 | `20_tailscale_hub_spoke_runbook.md` | Tailscale 기반 Hub-Spoke 연결 실행 절차 |
 | `21_hub_admin_ui_ingress.md` | ArgoCD/Grafana 관리자 HTTPS Ingress 운영 절차 |
+| `22_data_dashboard_vpc_runbook.md` | 1번 Data/Dashboard VPC apply/destroy, 영구 root, Foundation 경계, backend image rollout 절차 |
+| `23_local_frontend_dev.md` | 로컬 프론트/백엔드(localhost:5173/8000) 개발 환경 세팅 런북 |
 
 ## 기준
 
 - 현재 실제 운영 절차는 이 디렉터리의 문서를 우선한다.
+- 요구사항 정의서/SRS는 운영 절차 문서가 아니므로 `docs/report/03_요구사항정의서.md`와 `docs/product/02_requirements_definition.md`를 기준으로 한다.
 - 비밀번호, token, private key, certificate 원문은 문서에 기록하지 않는다.
 - AWS 리소스, 상시 실행 컴포넌트, 저장소, 네트워크 경로가 추가되면 `15_aws_cost_baseline.md`의 비용 기준을 함께 갱신한다.

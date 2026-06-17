@@ -1,4 +1,4 @@
-# Change 0024 - YOLOv8n instead of OpenCV ML for Edge AI detection
+# Change 0040 - YOLOv8n instead of OpenCV ML for Edge AI detection
 
 상태: accepted
 결정일: 2026-06-08

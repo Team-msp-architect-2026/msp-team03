@@ -1,8 +1,10 @@
 # Data/Dashboard VPC Runbook
 
 상태: source of truth
-기준일: 2026-06-09
+기준일: 2026-06-17
 수정 이력:
+  - 2026-06-17 v3.7  2026-06-16 사용자 요청으로 `infra/data-dashboard` 재생성 root destroy 완료 상태 반영. VPC/NAT/ALB/ECS/RDS/Redis/Lambda/SQS/runtime Secrets/API DNS/ALB ACM은 비활성, `infra/data-dashboard-permanent` 25 resources와 `infra/data-dashboard-dns` 1 resource는 유지. 다음 데모/수기 검증 전 `scripts/build/build-data-dashboard.sh` 실행 필요.
+  - 2026-06-10 v3.6  운영 빠른 실행 절차 정리. `build-data-dashboard.sh`는 DNS/permanent root preflight 후 재생성 root를 apply하고, `destroy-data-dashboard.sh`는 기본 대화형 확인 후 재생성 root만 destroy하도록 정리. Foundation과 Data/Dashboard root 경계를 명시.
   - 2026-06-09 v3.5  Dashboard backend ECR image를 ECS service에 반영하는 운영 스크립트 `scripts/ops/deploy-dashboard-backend.sh` 추가. GitHub Actions가 push한 `sha-<7char>` 태그를 입력하면 ECR 확인, Terraform task definition 등록, ECS service update, health check, post-apply plan 확인을 수행한다.
   - 2026-06-08 v3.4  Cloud Infra 일간 보고서 접근 제어와 Reports selector 운영 배포 완료. `factory_id=cloud-infra` 보고서는 공장 권한 대신 system-view 권한으로 list/get 접근을 허용. backend image `sha-71bbe1d`, ECS task definition revision 40, desired/running 2, `/healthz`와 `/readyz` 정상, Dashboard web HTTP 200, Terraform post-apply plan No changes.
   - 2026-06-08 v3.3  Dashboard history/report export numeric string 정규화와 Reports Word `.docx` 내보내기 운영 배포 완료. backend image `sha-199cb52`, ECS task definition revision 39, desired/running 2, `/healthz`와 `/readyz` 정상, Dashboard web HTTP 200, Terraform post-apply plan No changes.
@@ -49,7 +51,7 @@
 
 | window | 조회 경로 | 최대 아이템 수 |
 | --- | --- | --- |
-| `1h` | `HISTORY#STATE#` + max_items=500 cap | 500개 (ScanIndexForward=False) |
+| `1h` | `HISTORY#STATE#` + window-aware default limit | 기본 2000개 (명시 limit 최대 2000) |
 | `6h` | `GRAPH#5M#` | 최대 72개 |
 | `12h` | `GRAPH#5M#` | 최대 144개 |
 | `24h` | `GRAPH#5M#` | 최대 288개 |
@@ -58,7 +60,7 @@
 - 현재: 48h (data-processor 환경변수 미변경)
 - 목표: 2h (ADR 0025 기준)
 - TTL 변경은 `HISTORY_TTL_HOURS=2` data-pipeline 재배포 필요. 기존 아이템 자연 만료까지 시간 소요.
-- TTL 2h 적용 전까지는 max_items=500 cap 유지.
+- TTL 2h 적용 전까지는 테이블 아이템 수가 많을 수 있으므로 1h 조회는 기본 2000개 limit과 `since` delta refresh를 유지한다.
 
 **GRAPH#5M 데이터 현황 (2026-05-29)**:
 - factory-b, factory-c: Lambda GraphAggregator5m 배포 후 GRAPH#5M 데이터 적재 중
@@ -84,7 +86,7 @@
 - 이벤트는 risk level 변경, risk score 10점 이상 급락, risk score 10점 이상 회복을 표시한다.
 
 **잔여 한계**:
-- `window=1h` max_items=500 cap 유지: 1h 이내에서도 500개 초과 구간 스파이크 유실 가능
+- `window=1h` 기본 limit은 2000개로 상향 완료. 명시 limit은 최대 2000까지 허용
 - HISTORY#STATE TTL이 48h인 동안은 테이블 아이템 수 여전히 많음
 - GRAPH#5M 조회는 해당 공장에 GRAPH#5M 데이터가 없으면 빈 배열 반환
 
@@ -102,6 +104,23 @@ infra/data-dashboard-dns/  # Route53 Hosted Zone 영구 자원
 infra/data-dashboard-permanent/  # Cognito/ECR/DDB report/S3 web/CloudFront 영구 자원
 ```
 
+root 역할:
+
+| root | 역할 | build/destroy 정책 |
+| --- | --- | --- |
+| `infra/data-dashboard/` | VPC, subnet, NAT, ALB, ECS Backend, RDS, Redis, Lambda, runtime secret, API DNS record | 데모/운영 재생성 대상. `build-data-dashboard.sh`와 `destroy-data-dashboard.sh`가 직접 적용 |
+| `infra/data-dashboard-dns/` | Route53 hosted zone | 영구 유지. NS 위임 안정화를 위해 destroy 대상 아님 |
+| `infra/data-dashboard-permanent/` | Cognito, ECR `aegis/dashboard-backend`, S3 web bucket, CloudFront, report table, GitHub OIDC roles | 영구 유지. 웹/인증/이미지 저장소 재설정 비용을 줄이기 위해 destroy 대상 아님 |
+
+Foundation 의미:
+
+```text
+infra/foundation/ = 워크스트림 A가 관리하는 공용 AWS 기반 자원 묶음
+예: aegis-bucket-data, 기존 IoT raw S3 적재 Rule, AMP/ECR/OIDC 등
+```
+
+Data/Dashboard는 Foundation 자원을 참조하거나 prefix/table을 소비하지만, Foundation Terraform root를 수정하거나 destroy하지 않는다.
+
 손대지 않는 영역:
 
 ```text
@@ -113,12 +132,82 @@ scripts/destroy/destroy-hub.sh
 scripts/destroy/destroy-all.sh
 ```
 
-## 현재 Active 기준 (2026-05-27 destroy 후)
+## 현재 상태 기준 (2026-06-17)
 
-사용자 요청으로 세션 종료 전 `infra/data-dashboard/` 일시 root를 destroy 했다.
-이후 운영 Dashboard UI가 실제 DDB flat/nested 데이터 shape를 모두 처리하도록 수정되었고, Aegis-frontend 기준 UI 포팅과 `top_causes` field/name 양식 보정이 진행됐다.
-추가로 frontend refresh/subsampling 개선이 반영되어 WS 메시지 기반 refresh는 3초 throttle을 적용하고, 인증 실패 close code 4001은 재시도 없이 offline 처리한다. TopBar refresh interval과 Fleet/Factory auto polling도 반영됐다. Fleet은 선택 간격으로 목록과 최근 변화를 갱신하고, Factory는 WS 우선 + 미연결 시 polling 구조를 사용한다.
-Backend는 CORS 운영 origin을 명시하도록 수정되어 `https://dashboard.aegis-pi.cloud` preflight와 인증 API 호출을 허용한다.
+- Dashboard Web/인증/도메인/ECR/report table 등 영구 자원: `infra/data-dashboard-permanent`와 `infra/data-dashboard-dns`에서 유지
+- Dashboard API/ECS/RDS/Redis/Lambda/VPC runtime: 2026-06-16 `infra/data-dashboard` destroy 완료 후 비활성
+- 재생성 root state: 0 resources
+- 영구 root state: `infra/data-dashboard-permanent` 25 resources, `infra/data-dashboard-dns` 1 resource
+- 다음 데모/수기 검증 전: `scripts/build/build-data-dashboard.sh`로 재생성 root apply 필요
+- 운영 기능 구현 범위: Fleet/Factory, Cloud Infra, Reports S3 조회, 이미지 스냅샷, AI 채팅 데이터 QA
+- 후속: 인증 사용자로 실제 Bedrock Nova 질의 및 `/image-snapshots` 실데이터 수기 확인, LLM 보고서 생성기
+
+## AI 채팅 Bedrock 모델 평가
+
+기준:
+
+```text
+Resolve   apac.amazon.nova-micro-v1:0
+Fast      apac.amazon.nova-pro-v1:0
+Precise   apac.amazon.nova-pro-v1:0
+```
+
+평가 스크립트:
+
+```bash
+apps/dashboard-backend/scripts/evaluate_bedrock_chat_models.py \
+  --preset nova-quality \
+  --mode all \
+  --yes-live-bedrock \
+  --output /tmp/aegis-nova-quality-eval.jsonl
+```
+
+Dashboard `/chat` quick start 추천 문항 4개만 확인:
+
+```bash
+apps/dashboard-backend/scripts/evaluate_bedrock_chat_models.py \
+  --preset nova-quality \
+  --mode resolve \
+  --case-set quickstart \
+  --yes-live-bedrock \
+  --output /tmp/aegis-nova-quality-quickstart-eval.jsonl
+```
+
+비교 preset:
+
+```text
+baseline         기존 Claude Haiku/Sonnet 기준선
+nova-low-cost    resolve Micro / fast Lite / precise Pro
+nova-balanced    resolve Micro / fast Micro / precise Pro
+nova-aggressive  resolve Micro / fast Micro / precise Lite
+nova-2-lite      global Nova 2 Lite 단일 모델
+nova-quality     resolve Micro / fast Pro / precise Pro (채택)
+```
+
+운영 기준:
+
+- raw 평가 결과는 `/tmp` 등 git 추적 외부에 둔다.
+- 문서에는 case id, pass/fail, 지연, 비용 추정만 요약한다.
+- 모델 교체 후에도 `/chat/query` 응답은 `model_tier`만 노출한다. raw model id는 API 응답에 노출하지 않는다.
+- 운영 배포 전 `terraform -chdir=infra/data-dashboard plan`에서 ECS task definition env와 Bedrock IAM allowlist 변경만 포함되는지 확인한다.
+
+2026-06-11 평가 요약:
+
+| 후보 | 결과 |
+| --- | --- |
+| `nova-low-cost` | Resolve 5/5. fast Lite가 센서 정상범위를 근거 없이 단정해 기본값 비채택 |
+| `nova-aggressive` | 비용 최저. precise Lite가 원인 표현을 다소 강하게 단정해 운영 기본값 비채택 |
+| `nova-2-lite` | global profile. 정상범위/권고 생성 경향과 residency 이유로 비채택 |
+| `nova-quality` | Resolve 5/5, fast/precise 모두 확인·추정·missing 분리 양호. 기본값 채택 |
+
+Quick start 4문항 평가:
+
+| 문항 | Nova Micro resolve 결과 |
+| --- | --- |
+| 증빙 사진 + 09:35 위험 점수 spike 요약 | `spike_check` / `point` / `factory-a` 일치 |
+| 2026-06-09 보고서 주요 이벤트 요약 | `report` / `point` / `factory-a` 일치 |
+| 오후 3시 안전 점수 급락 원인 | `cause_analysis` / `point` / `factory-a` 일치 |
+| 오후 2시~4시 안전 점수·AI 탐지 추이 비교 | `history_trend` / `interval` / `factory-a` 일치 |
 
 ## Dashboard RBAC 사용자 관리
 
@@ -158,7 +247,7 @@ Dashboard Web          /admin/users 사용자 관리 화면
 
 - Cognito sub 값은 개인 식별자이므로 문서에 기록하지 않는다.
 - 사용자 비밀번호는 Cognito 임시 비밀번호/초기 설정 흐름으로만 다룬다. RDS에 비밀번호를 저장하지 않는다.
-- `DELETE /admin/users/{user_id}`는 Cognito 사용자를 disable하고 RDS 사용자를 `disabled`로 표시하는 soft-delete다.
+- `DELETE /admin/users/{user_id}`는 Cognito `AdminDeleteUser` 실행 후 RDS `app_user`와 `user_factory_access` row를 삭제한다. 현재 운영 기준은 hard delete이며, 같은 email의 과거 disabled 잔여 row가 있으면 생성 시 best-effort 정리한다.
 - Backend startup은 `DATABASE_AUTO_CREATE_METADATA=true`일 때 RBAC metadata table을 idempotent하게 생성하고 `DASHBOARD_FACTORY_IDS`의 공장 ID를 `factory` table에 동기화한다.
 
 운영 확인:
@@ -191,6 +280,8 @@ post-apply terraform plan = No changes
 ```
 
 ## Dashboard Backend Image Rollout
+
+전제: `infra/data-dashboard` 재생성 root가 active이고 ECS service가 존재해야 한다. 2026-06-16 destroy 상태에서는 먼저 `scripts/build/build-data-dashboard.sh`로 재생성 root를 올린 뒤 이 절차를 수행한다.
 
 backend 코드가 `main`에 push되면 GitHub Actions `dashboard-backend` workflow가 테스트 후 ECR에 아래 두 태그를 push한다.
 
@@ -242,7 +333,7 @@ scripts/ops/deploy-dashboard-backend.sh acd6717
 5. ECS service `KJW-AEGIS-Data-Service-Backend` rolling update
 6. `services-stable` 대기
 7. running task image/health, ALB target health 확인
-8. `/healthz`, `/readyz`, 비인증 `/chat/query` 401, Dashboard `/chat` 200 확인
+8. `/healthz`, `/readyz`, 비인증 `/chat/query` 401, 인증 후 `/chat/query`·`/image-snapshots`·Dashboard `/chat` 200 확인
 9. 동일 image override 기준 Terraform post-apply plan `No changes` 확인
 ```
 
@@ -650,7 +741,7 @@ git diff --check
 # 1. IAM role apply (infra/data-dashboard)
 terraform -chdir=infra/data-dashboard apply \
   -var="dashboard_domain_name=aegis-pi.cloud" \
-  -var="ecs_backend_desired_count=1" \
+  -var="ecs_backend_desired_count=2" \
   -var="backend_container_image=<account>.dkr.ecr.ap-south-1.amazonaws.com/aegis/dashboard-backend:sha-9d2c200"
 
 # 2. apply 후 output 확인 (ARN/ID만, 실제 값 문서 기록 금지)
@@ -711,6 +802,8 @@ aws s3 sync apps/dashboard-web/dist/ s3://kjw-aegis-data-web/ \
 
 ## Apply
 
+Apply는 `infra/data-dashboard/` 재생성 root만 실제로 올린다. 실행 전 `infra/data-dashboard-dns/`와 `infra/data-dashboard-permanent/`는 `terraform init/fmt/validate`로 preflight만 수행한다.
+
 기본 도메인 `aegis-pi.cloud`:
 
 ```bash
@@ -732,15 +825,25 @@ scripts/build/build-data-dashboard.sh --domain aegis-pi.cloud --otp <MFA_OTP>
 스크립트 수행 내용:
 
 ```text
-terraform init
-terraform fmt -check
-terraform validate
-terraform plan -var dashboard_domain_name=... -out=tfplan
-terraform apply tfplan
-tfplan 삭제
+1. AWS MFA 세션 확인 또는 OTP 기반 세션 준비
+2. 삭제 예약 중인 Data/Dashboard runtime secret 즉시 삭제로 이름 충돌 방지
+3. infra/data-dashboard-dns terraform init / fmt -check / validate
+4. infra/data-dashboard-permanent terraform init / fmt -check / validate
+5. infra/data-dashboard terraform init / fmt -check / validate
+6. infra/data-dashboard terraform plan -var dashboard_domain_name=... -out=tfplan
+7. infra/data-dashboard terraform apply tfplan
+8. tfplan 삭제
 ```
 
 삭제 예약 중인 기존 Data/Dashboard secret이 있으면 apply 전에 강제 삭제해 이름 충돌을 막는다.
+
+Apply 후 최소 확인:
+
+```bash
+curl -fsS https://api.aegis-pi.cloud/healthz
+curl -fsS https://api.aegis-pi.cloud/readyz
+curl -fsSI https://dashboard.aegis-pi.cloud/ | head
+```
 
 ## Destroy
 
@@ -754,18 +857,37 @@ MFA 세션 토큰이 없으면 OTP를 전달한다.
 scripts/destroy/destroy-data-dashboard.sh --domain aegis-pi.cloud --otp <MFA_OTP>
 ```
 
+자동화 환경에서 대화형 확인을 생략해야 할 때만 `--yes`를 붙인다.
+
+```bash
+scripts/destroy/destroy-data-dashboard.sh --domain aegis-pi.cloud --yes
+```
+
 스크립트 수행 내용:
 
 ```text
-terraform init
-terraform validate
-terraform plan -destroy -var dashboard_domain_name=... -out=tfplan.destroy
-terraform apply tfplan.destroy
-tfplan.destroy 삭제
+1. AWS MFA 세션 확인 또는 OTP 기반 세션 준비
+2. `--yes`가 없으면 `destroy-data-dashboard` 문구 입력 확인
+3. infra/data-dashboard terraform init
+4. infra/data-dashboard terraform validate
+5. infra/data-dashboard terraform plan -destroy -var dashboard_domain_name=... -out=tfplan.destroy
+6. infra/data-dashboard terraform apply tfplan.destroy
+7. tfplan.destroy 삭제
 ```
 
 RDS는 final snapshot을 생성한다. snapshot 이름은 Terraform `random_id`를 포함해 매 apply/destroy 사이클마다 충돌하지 않는다.
 Lambda VPC ENI가 `available` 상태로 남아 보안 그룹/서브넷 삭제가 지연될 수 있다. AWS가 자동 정리하지 않으면 해당 destroy 대상 VPC ENI만 확인 후 정리한다.
+
+Destroy 후 정상 기준:
+
+```text
+infra/data-dashboard state count = 0
+infra/data-dashboard-dns state count = 1
+infra/data-dashboard-permanent state count = 25
+dashboard.aegis-pi.cloud = HTTP 200 가능
+api.aegis-pi.cloud = DNS 미해결 또는 API 미응답 가능 (ALB/API 삭제 후 정상)
+RDS final snapshot = available
+```
 
 ## 수동 확인
 

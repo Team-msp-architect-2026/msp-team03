@@ -7,18 +7,21 @@
 | 파일 | 내용 |
 | --- | --- |
 | `MASTER_CHECKLIST.md` | M0~M7 전체 진행 상태 요약 체크리스트 |
+| `SESSION_STATE.md` | 현재 세션을 이어받기 위한 상태 스냅샷 |
 | `M0_factory-a_safe-edge-baseline.md` | `factory-a` Safe-Edge 기준선 복구 작업 |
 | `M1_hub-cloud.md` | AWS Hub, EKS, IoT Core, S3, AMP 기준 작업 |
 | `M2_mesh-vpn-hub-spoke.md` | Tailscale 기반 Hub-Spoke 연결 작업 |
 | `M3_deploy-pipeline.md` | GitHub Actions, ECR, ArgoCD 기반 배포 파이프라인 |
 | `M4_data-plane.md` | Edge Agent, IoT Core, S3 데이터 플레인 |
 | `M5_vm-spoke-expansion.md` | `factory-b`, `factory-c` VM Spoke 확장 |
-| `M6_risk-twin-dashboard.md` | Risk Score Engine과 관제 화면 |
+| `M6_risk-twin-dashboard.md` | Lambda Risk 계산 로직과 관제 화면 |
 | `M7_integration-test.md` | 전체 통합 검증 시나리오 |
+| `edit.md` | 이슈 문서 보강 메모와 수정 방향 |
 
 ## 기준
 
 - 실제 완료 여부는 `MASTER_CHECKLIST.md`와 각 마일스톤 문서를 함께 확인한다.
+- 새 작업을 시작하기 전 `SESSION_STATE.md`의 다음 작업을 확인한다.
 - 각 마일스톤 issue 문서를 수정할 때는 문서 상단부에 `수정 이력`을 남긴다.
 - 수정 이력은 날짜, 수정 버전, 수정 요약만 간단히 기록한다.
 - 각 GitHub issue 단위 작업을 진행하거나 완료하면 해당 issue 섹션 아래에 `GitHub Issue Comment Draft`를 남긴다.
@@ -27,6 +30,7 @@
 - 민감 정보, 비밀번호, 토큰, 인증서 private key, MFA OTP, 세션 토큰, 전체 ARN 이상의 불필요한 계정 세부정보는 comment draft에 남기지 않는다.
 - 보류/미완료 이슈도 판단이 바뀌면 `상태`, `진행 요약`, `후속`을 짧게 남긴다.
 - 초기 버전 확인이 필요하면 Git history에서 수정 이력 이전 버전을 확인한다.
+- `SESSION_STATE.md`는 현재 상태 스냅샷이므로 누적 수정 이력을 남기지 않는다.
 
 수정 이력 예:
 

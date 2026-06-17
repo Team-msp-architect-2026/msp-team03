@@ -1,4 +1,4 @@
-# 0021 DynamoDB: infra/data-pipeline → infra/foundation
+# 0037 DynamoDB: infra/data-pipeline → infra/foundation
 
 상태: accepted
 결정일: 2026-05-21

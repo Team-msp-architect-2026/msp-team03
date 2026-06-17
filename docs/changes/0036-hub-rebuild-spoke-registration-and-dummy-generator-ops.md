@@ -1,4 +1,4 @@
-# 0020 Hub-only rebuild spoke registration and dummy generator operations
+# 0036 Hub-only rebuild spoke registration and dummy generator operations
 
 상태: accepted
 결정일: 2026-05-21

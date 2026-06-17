@@ -22,12 +22,26 @@ MVP 확장 방향은 2 VPC 구조를 기준으로 한다.
 
 | 영역 | 역할 | 주요 리소스 |
 | --- | --- | --- |
-| 1번 VPC | 데이터 처리, 위험도 계산, 사용자 관제 화면 | Dashboard Web, Dashboard Backend/API, Event Processor, Risk Engine, Replay Builder, Near-miss Aggregator, AI/분석 Worker, RDS, Redis, OpenSearch |
+| 1번 VPC | 데이터 처리 결과 조회, 위험도 표시, 사용자 관제 화면 | Dashboard Web, Dashboard Backend/API, Lambda data processor 연동, DynamoDB LATEST/HISTORY, S3 processed, Replay Builder, Near-miss Aggregator |
 | 2번 VPC | 중앙 제어, 배포, Hub-Spoke 연결, 운영 관측 | EKS Hub, ArgoCD, Tailscale, Prometheus Agent, Grafana, AWS Load Balancer Controller |
 
 Grafana는 2번 Control / Management VPC에 둔다. 현재 클라우드 Grafana는 사용자용 Risk Twin 대시보드가 아니라 Hub EKS와 AMP 메트릭을 보는 운영자용 observability 도구이기 때문이다.
 
 Dashboard Web/API는 1번 Data / Dashboard VPC에 둔다. Dashboard는 최종 사용자 또는 본사 관제 담당자가 보는 제품 화면이므로 ArgoCD/Tailscale 같은 제어 plane과 분리한다.
+
+## 2026-05-13 멘토링 반영
+
+### 기존 초안
+
+기존 문서는 MVP 이후 확장 구조를 2 VPC 기준으로 정리했다. Dashboard는 사용자-facing 제품 화면이고, ArgoCD/Tailscale/EKS API 같은 제어 plane과 분리한다는 판단을 담았다.
+
+### 변경 이유
+
+멘토링에서는 2 VPC가 항상 정답이 아니라 고객 요구사항에 따라 선택되는 구조라는 피드백이 있었다. 사용자 역할, 접근 권한, 보안 감사, 개인정보 보호 요구가 분리될 때 2 VPC가 더 설득력 있다.
+
+### 보강 방향
+
+기존 2 VPC 목표 구조는 유지한다. 다만 초기 MVP에서는 하나의 VPC 안에서 subnet, security group, IAM으로 분리하는 방식도 가능하다는 점을 함께 설명한다. Aegis-Pi의 2 VPC는 고객 보안 요구가 강화되는 경우를 고려한 목표 구조로 둔다.
 
 ## 1번 VPC: Data / Dashboard VPC
 
@@ -37,8 +51,7 @@ Dashboard Web/API는 1번 Data / Dashboard VPC에 둔다. Dashboard는 최종 �
 
 ```text
 IoT Core / S3 raw 수신 이후 처리
-데이터 정규화
-위험도 계산
+Lambda data processor 기반 데이터 정규화와 위험도 계산
 이벤트 / near-miss 집계
 Replay 데이터 생성
 Dashboard 화면과 조회 API 제공
@@ -57,16 +70,17 @@ Public subnet
 Private App subnet
   - Dashboard Web
   - Dashboard Backend/API
-  - Event Processor
-  - Risk Engine
+  - Lambda data processor integration
   - Replay Builder
   - Near-miss Aggregator
   - AI / analytics worker
 
 Private Data subnet
-  - RDS / PostgreSQL
-  - Redis / ElastiCache
-  - OpenSearch
+  - DynamoDB LATEST/HISTORY access
+  - S3 processed access
+  - RDS / PostgreSQL (후속)
+  - Redis / ElastiCache (후속)
+  - OpenSearch (후속)
 ```
 
 ### Dashboard Web 위치
@@ -163,7 +177,7 @@ prometheus.io/scrape: "true" annotation이 붙은 Hub 내부 Pod
 ```text
 factory-a InfluxDB 센서 데이터
 factory-a AI detection / audio detection 데이터
-Risk Engine 결과
+Lambda data processor Risk 계산 결과
 Dashboard latest status
 공장별 Risk Score
 ```
@@ -206,8 +220,7 @@ near-miss aggregation
 위 처리는 Data / Analytics workload로 분리한다.
 
 ```text
-Event Processor
-Risk Engine
+Lambda data processor
 Replay Builder
 Near-miss Aggregator
 AI / analytics worker
@@ -268,7 +281,7 @@ factory별 tag / ACL 분리
 운영자 단말과 시스템 노드 권한 분리
 ArgoCD용 Kubernetes 권한 최소화
 Tailscale 경로를 DB / 분석 저장소 접근망으로 확장하지 않기
-Dashboard / Risk Engine 접근을 Tailscale에 의존시키지 않기
+Dashboard / Lambda data processor 접근을 Tailscale에 의존시키지 않기
 ```
 
 ## VPC 간 연결 원칙
@@ -288,9 +301,10 @@ MVP에서는 1번 VPC와 2번 VPC를 직접 강하게 연결하지 않는다.
 ```text
 factory telemetry
   -> IoT Core
-  -> S3 raw
-  -> 1번 VPC Event Processor / Risk Engine
-  -> processed / latest 결과 저장
+      -> IoT Rule -> S3 raw
+      -> Lambda data processor
+          -> DynamoDB LATEST/HISTORY
+          -> S3 processed
   -> 1번 VPC Dashboard API가 조회
 
 Hub / Data service metrics
@@ -325,8 +339,7 @@ Private App subnet
   - Tailscale
   - Grafana
   - Dashboard Backend/API
-  - Risk Engine
-  - Event Processor
+  - Lambda data processor integration
 
 Private Data subnet
   - RDS
@@ -334,7 +347,7 @@ Private Data subnet
   - OpenSearch
 ```
 
-다만 하나의 private app tier 안에 제어 plane과 데이터 처리 plane이 섞인다. 보안 경계, 작업 분담, 장기 확장성을 고려하면 2 VPC 구조가 더 적합하다.
+다만 하나의 private app tier 안에 제어 plane과 Dashboard/API plane이 섞인다. 보안 경계, 작업 분담, 장기 확장성을 고려하면 2 VPC 구조가 더 적합하다.
 
 ## 현재 범위에서 제외하는 항목
 
@@ -355,9 +368,28 @@ Fleet Controller라는 별도 서비스는 현재 프로젝트 범위에 없다.
 1. `infra/hub`를 2번 Control / Management VPC로 명확히 명명한다.
 2. 1번 Data / Dashboard VPC Terraform root를 새로 설계한다.
 3. Dashboard Web이 서버형인지 정적 SPA인지 확정한다.
-4. Dashboard Backend/API와 Risk Engine의 책임 경계를 API 수준으로 문서화한다.
+4. Dashboard Backend/API와 Lambda data processor의 저장소 계약을 API 수준으로 문서화한다.
 5. Data / Dashboard VPC의 저장소 후보를 확정한다.
-   - MVP: S3 `latest/`, S3 `processed/`
-   - 필요 시: DynamoDB latest status, RDS, Redis, OpenSearch
+   - MVP: DynamoDB LATEST/HISTORY, S3 `processed/`
+   - 후속: RDS, Redis, OpenSearch
 6. 1번 VPC workload의 메트릭을 AMP로 보낼지 결정한다.
 7. ArgoCD HA 옵션은 M3/M4 이후 운영 안정화 단계에서 검토한다.
+
+## 2026-05-14 수정 방향
+
+이 문서의 이전 `Event Processor`와 `Risk Engine` 표현은 최신 MVP 기준에서 별도 장기 실행 서비스가 아니다.
+
+최신 기준은 `docs/specs/data_storage_pipeline.md`를 따른다.
+
+```text
+IoT Core
+  -> IoT Rule -> S3 raw
+  -> Lambda data processor
+      -> DynamoDB LATEST
+      -> DynamoDB HISTORY
+      -> S3 processed
+Dashboard Backend/API
+  -> DynamoDB + S3 processed read-only 조회
+```
+
+따라서 M3 Issue 2 ECR 범위에는 `risk-normalizer`, `risk-score-engine`, `pipeline-status-aggregator`를 포함하지 않는다.

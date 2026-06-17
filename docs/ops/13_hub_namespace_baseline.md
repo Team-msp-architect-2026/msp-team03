@@ -5,7 +5,7 @@
 
 ## 목적
 
-Hub EKS 내부 기능을 namespace 단위로 분리해 ArgoCD, 관측, Risk 계산, 운영 보조 기능의 배포 경계를 명확히 한다.
+Hub EKS 내부 기능을 namespace 단위로 분리해 ArgoCD, 운영 관측, 임시 검증용 workload, 운영 보조 기능의 배포 경계를 명확히 한다. 최신 목표에서 Risk 계산과 정규화는 별도 Hub 파드가 아니라 Lambda data processor와 DynamoDB/S3 processed로 분리한다.
 
 ## Namespace
 
@@ -13,8 +13,8 @@ Hub EKS 내부 기능을 namespace 단위로 분리해 ArgoCD, 관측, Risk 계�
 | --- | --- |
 | `argocd` | Hub에서 Spoke 배포 제어 |
 | `observability` | Grafana, AMP 연동 메트릭 관제 |
-| `risk` | Risk Score Engine, 정규화 서비스 |
-| `ops-support` | `pipeline_status` 집계 보조 기능 |
+| `risk` | M1 검증용 또는 임시 risk workload. 최신 MVP에서는 별도 Risk 계산 파드를 두지 않음 |
+| `ops-support` | legacy `pipeline_status` 집계 보조 기능 후보. 최신 MVP에서는 Lambda data processor가 `pipeline_status`를 계산 |
 
 ## Ansible bootstrap 관리
 
@@ -52,7 +52,7 @@ ops-support     Active
 
 각 namespace에 `default-limits` LimitRange가 생성되어 있다.
 
-2026-05-06 기준 Hub EKS는 `build-all --admin-ui`와 `build-hub`로 재생성/검증했고, 2026-05-08 비용 정리를 위해 destroy 완료 상태다. rebuild 시 `risk/risk-normalizer`와 `observability/prometheus-agent` ServiceAccount는 각각 S3 처리와 AMP remote_write용 IRSA role로 annotation된다.
+2026-05-06 기준 Hub EKS는 `build-all --admin-ui`와 `build-hub`로 재생성/검증했고, 2026-05-08 비용 정리를 위해 destroy 완료 상태다. rebuild 시 M1 검증용 `risk/risk-normalizer`와 `observability/prometheus-agent` ServiceAccount는 각각 S3 처리 검증과 AMP remote_write용 IRSA role로 annotation된다. 단, `risk/risk-normalizer`는 과거 IRSA 검증용 workload이며 최신 데이터 처리 구현 대상은 Lambda data processor다.
 
 나중에 Hub EKS를 destroy/recreate하면 `scripts/build/build-hub.sh` 실행 시 Ansible bootstrap playbook이 `argocd`, `observability`, `risk`, `ops-support` namespace, `default-limits` LimitRange, IRSA ServiceAccount, Hub ArgoCD Helm release를 다시 생성한다.
 
