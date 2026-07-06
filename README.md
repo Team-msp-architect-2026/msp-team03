@@ -108,7 +108,7 @@ Safe-Edge 기준선을 유지하면서 **AWS EKS Hub + Tailscale Mesh + Dual VPC
 
 제어 평면(Control/Management VPC)과 데이터 평면(Data/Dashboard VPC)을 **직접 연결 없이** 분리해, 사용자 대시보드가 K3s·EKS·ArgoCD 관리 API에 접근하지 않고 read model만 조회한다.
 
-<img width="1000" height="800" alt="architecture" src="https://github.com/user-attachments/assets/d2798158-6594-491d-820d-13ebe7c73097" />
+<img width="1000" alt="architecture" src="docs/architecture/images/agiespi_architecture_overview_final3.drawio.png" />
 
 | VPC | 역할 | 핵심 구성 |
 |:---|:---|:---|
