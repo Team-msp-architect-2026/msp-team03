@@ -1,7 +1,20 @@
 # 목표 확장 아키텍처
 
 상태: draft
-기준일: 2026-05-04
+기준일: 2026-06-17
+수정 이력:
+  - 2026-06-17 v1.1  ADR 0033/0035 AI 채팅 데이터 QA와 S3 image_snapshot read path 추가. Bedrock Nova resolve/explain, S3 processed_agg/reports/image_snapshot evidence 조회 기준을 반영.
+  - 2026-06-17 v1.0  ADR 0030 이후 Dashboard Backend ECS task sizing을 1 vCPU / 2 GB, desired/min 2 기준으로 정정.
+  - 2026-06-02 v0.9  LLM 보고서 섹션 현행화. Dashboard 보고서 조회 경로(`/reports`, S3 `reports/daily/`)는 구현 완료(ADR 0029), 생성기는 팀원/후속으로 구분.
+  - 2026-05-26 v0.8  Step 8을 운영용 Frontend Vite + React 마이그레이션으로 재정의. LLM 일간 보고서는 팀원/후속 목표로 분리.
+  - 2026-05-26 v0.7  Step 6 완료 반영. Dashboard Backend 구현 완료/미배포 상태 명시. frontend/ prototype/reference와 apps/dashboard-web/ 운영 SPA 경로 구분 추가.
+  - 2026-05-21 v0.6  VPC 1 Terraform 구현 가드 추가. 신규 Data/Dashboard 리소스는 `KJW-AEGIS-Data-*` prefix를 사용하고, `infra/data-dashboard/` root에서 목표 아키텍처 기준으로만 생성하도록 명시.
+  - 2026-05-19 v0.5  ADR 0017 반영. 1번 VPC 메타 저장소를 RDS PostgreSQL로 변경.
+  - 2026-05-18 v0.4  ADR 0012~0016 반영. Phase 1 통합 결정으로 1번 VPC에 ECS Fargate Backend + 관계형 메타 저장소 + Redis + WebSocket + Bedrock 추가. ADR 0011 NAT GW 제거 결정은 ADR 0012로 supersede.
+  - 2026-05-15 v0.3  ADR 0011 반영. 1번 VPC NAT GW 제거.
+  - 2026-05-15 v0.2  ADR 0006~0010으로 1번 VPC MVP 토폴로지 확정. Data/Dashboard VPC 섹션 갱신.
+  - 2026-05-14  Lambda data processor 통합 표현
+  - 2026-05-04  초안
 
 ## 목적
 
@@ -79,26 +92,90 @@ GitHub Push
 
 ## 목표 데이터 평면
 
+### 수신·처리·저장 (write-path)
+
 ```text
 Edge input
     -> local Safe-Edge workloads
     -> InfluxDB / Kubernetes API
     -> Edge Agent
     -> AWS IoT Core
-    -> S3
-    -> Risk Normalizer
-    -> Risk Score Engine
-    -> S3 processed / latest status store
-    -> Data / Dashboard VPC Web/API
+        -> IoT Rule -> S3 raw
+        -> Lambda data processor -> DynamoDB LATEST/HISTORY + S3 processed
+                                         |
+                                         | DynamoDB Streams (NEW_AND_OLD_IMAGES)
+                                         v
+                                  Lambda notifier (VPC-attach)
+                                         |
+                                         v
+                                  ElastiCache Redis (Pub/Sub)
 ```
 
-확장 조건:
+### 조회·실시간 푸시 (read-path)
+
+```text
+Dashboard Web (SPA, CloudFront + S3)
+    -> Cognito 로그인 / JWT 발급
+    -> ALB (https://api.<도메인>)
+    -> ECS Fargate Backend (FastAPI)
+        -> DynamoDB LATEST/HISTORY (read)
+        -> S3 processed (read)
+        -> RDS PostgreSQL (메타·권한 read)
+        -> Redis (캐시 read + Pub/Sub subscribe)
+    <- WebSocket (factory-update push)
+```
+
+### LLM 보고서 (생성기는 팀원/후속 목표, Dashboard 조회 경로는 구현 완료)
+
+```text
+EventBridge schedule (매일 09:00 KST)            ← 생성기 미구현 (팀원/후속)
+    -> Lambda report-generator
+        -> DynamoDB HISTORY + S3 processed (read, 지난 24h)
+        -> Bedrock Claude 3 Haiku (invoke)
+        -> S3 reports/daily/yyyy={YYYY}/mm={MM}/dd={DD}/{factory_id}/report.md (write)
+Dashboard Web                                    ← 조회 경로 구현 완료 (ADR 0029)
+    -> ALB -> ECS Backend
+        -> GET /reports         → S3 ListObjectsV2 (reports/daily/)
+        -> GET /reports/{date}/{factory_id} → S3 GetObject (report.md)
+        -> Markdown 렌더링 + PDF/Word 내보내기
+```
+
+- Dashboard Backend 조회 경로(`/reports`, `/reports/{date}/{factory_id}`)와 S3 `reports/daily/` object key 계약은 ADR 0029로 확정·구현됐다. 생성기가 동일 경로에 `report.md`를 쓰면 추가 배포 없이 표시된다.
+- Dashboard 조회는 DynamoDB `aegis-daily-report`가 아니라 S3를 1차 대상으로 한다(메타 table은 잔존하나 조회 경로에서 미사용).
+
+### AI 채팅 / 이미지 스냅샷 (구현 완료, ADR 0033/0035)
+
+```text
+Dashboard Web /chat
+    -> ALB -> ECS Backend /chat/query
+        -> LLM resolve (Bedrock Nova Micro)
+        -> deterministic data tools (DDB LATEST/HISTORY/GRAPH#5M, S3 processed/processed_agg/reports/image_snapshot)
+        -> LLM explain (Bedrock Nova Pro) or rule fallback
+
+Dashboard Web /image-snapshots
+    -> ALB -> ECS Backend /image-snapshots, /image-snapshots/range
+        -> S3 image_snapshot/factory_id={factory_id}/yyyy=.../mm=.../dd=.../hh=...
+        -> presigned URL 반환
+```
+
+- `/chat/query`는 intent/factory/time을 먼저 구조화한 뒤 RBAC를 재검증하고 DDB/S3 evidence를 조회한다.
+- `/image-snapshots`는 system-view 권한 사용자만 접근한다.
+- 모델 ID는 backend/Terraform 설정값이며 API 응답에는 `model_tier`만 노출한다.
+
+### 합류 지점 / 팀 합의 영역
+
+- `Edge Agent → IoT Core → IoT Rule → Lambda data processor → DDB/S3` 경로는 워크스트림 A·B 공통 합의 영역. **본 환경에서 변경하지 않는다**
+- 메시지 주기 3s sensor / 20s heartbeat, factory-a 실데이터 / factory-b·c dummy 데이터도 팀 합의 영역
+- 본 환경의 자유 설계 영역은 IoT Rule 이후 처리 결과의 **조회/실시간 푸시/메타 관리/운영 Dashboard Web**
+- LLM 보고서는 ADR 0016 목표로 유지하되, 현재 본 환경 Step 8에서는 구현하지 않고 팀원/후속 작업으로 분리한다.
+
+### 확장 조건
 
 - 현재 InfluxDB 기반 로컬 관제에서 표준 input schema를 분리할 것
 - `edge-agent` 이미지를 만들고 `factory-a`에서는 real mode, `factory-b/c`에서는 dummy mode로 공통 송신 로직을 재사용할 것
 - IoT Core topic과 S3 partition 규칙을 확정할 것
 - `factory_id`, `source_type`, timestamp 기준을 고정할 것
-- Dashboard Web/API가 Spoke K3s, ArgoCD, Control / Management VPC의 EKS API, Tailscale 관리망에 직접 붙지 않도록, Edge Agent가 `system_status`, `device_status`, `workload_status`, `pipeline_heartbeat`까지 송신할 것
+- Dashboard Backend가 Spoke K3s, ArgoCD, Control / Management VPC의 EKS API, Tailscale 관리망에 직접 붙지 않도록, Edge Agent가 `system_status`, `device_status`, `workload_status`, `pipeline_heartbeat`까지 송신할 것
 
 초기 topic 기준:
 
@@ -120,27 +197,199 @@ aegis/factory-c/workload_status
 aegis/factory-c/heartbeat
 ```
 
-## 목표 Data / Dashboard VPC
+## Phase 1 Data / Dashboard VPC (통합 배포 목표)
 
-사용자 대시보드는 Tailscale/VPN 의존 없이 ALB, WAF, Cognito 또는 사내 IdP 인증 뒤에 제공한다.
+ADR 0006~0017으로 토폴로지가 확정됨. 사용자 대시보드는 Tailscale/VPN 의존 없이 Cognito 인증된 정적 SPA + JWT 기반 API로 제공한다.
 
-Dashboard Web/API는 ArgoCD, Tailscale, EKS API 같은 제어 plane에 직접 접근하지 않는다. 데이터 조회는 1번 Data / Dashboard VPC의 processed data와 latest status store를 기준으로 한다.
+Dashboard Backend는 ArgoCD, Tailscale, EKS API 같은 제어 plane에 직접 접근하지 않는다. 데이터 조회는 DynamoDB LATEST/HISTORY, S3 processed, RDS PostgreSQL 메타, Redis 캐시 네 곳을 조합한다.
+
+> Phase 1 = 본 환경에서 실제로 배포·운영하는 통합 목표.
+> 원래 초안은 Phase 1 MVP(서버리스 최소 구성)와 Phase 1.5(컨테이너 확장)를 분리했으나, 본 환경 목적상 두 단계를 Phase 1으로 통합 (`docs/planning/17_expansion_roadmap.md`).
+
+### Terraform 구현 기준 (Claude Code handoff)
 
 ```text
-1번 Data / Dashboard VPC
-    -> ALB
-    -> WAF
-    -> Auth
-    -> Dashboard Web/API
-    -> Event Processor
-    -> Risk Engine
-    -> RDS / Redis / OpenSearch
+Terraform root:
+  infra/data-dashboard/
+
+State/backend:
+  infra/hub, infra/foundation과 분리
+
+수정 금지 참고 영역:
+  infra/hub/          2번 Control / Management VPC + EKS
+  infra/foundation/   공유 S3/AMP/ECR/IoT Rule/GitHub Actions OIDC
+  infra/mesh-vpn/     Tailscale Hub-Spoke
+  infra/safe-edge/    factory-a 기준선 문서
+  infra/deploy/       배포 파이프라인 보조 영역
+
+VPC CIDR:
+  Hub VPC 10.0.0.0/16과 중복 금지
+
+Name prefix:
+  신규 Data/Dashboard Terraform 리소스는 기존 AEGIS prefix 앞에 KJW를 붙인다.
+  기본 이름: KJW-AEGIS-Data-*
+  lowercase 제약 리소스: kjw-aegis-data-*
+
+Terraform locals 권장:
+  owner_prefix   = "KJW"
+  project_prefix = "AEGIS"
+  area_prefix    = "Data"
+  naming_prefix  = "KJW-AEGIS-Data"
+  name_prefix_lc = "kjw-aegis-data"
 ```
 
-상세 기준:
+예시:
+
+| 리소스 | 권장 이름 |
+| --- | --- |
+| VPC Name tag | `KJW-AEGIS-Data-VPC` |
+| Public subnet Name tag | `KJW-AEGIS-Data-Subnet-public-Azone` |
+| Private App subnet Name tag | `KJW-AEGIS-Data-Subnet-private-app-Azone` |
+| Private Data subnet Name tag | `KJW-AEGIS-Data-Subnet-private-data-Azone` |
+| Security Group | `KJW-AEGIS-Data-SG-<purpose>` |
+| ALB | `KJW-AEGIS-Data-ALB-dashboard-api` |
+| ECS Cluster | `KJW-AEGIS-Data-ECS-dashboard-backend` |
+| RDS identifier | `kjw-aegis-data-postgres` |
+| Redis replication group | `kjw-aegis-data-redis` |
+| S3 dashboard web bucket | `kjw-aegis-data-dashboard-web-<suffix>` |
+
+공유 리소스는 재생성하지 않는다.
 
 ```text
-docs/planning/07_dashboard_vpc_extension_plan.md
+참조만 허용:
+  S3 aegis-bucket-data
+  existing IoT Rule AEGIS_IoTRule_factory_a_raw_s3
+
+수정 금지:
+  bucket 자체 / bucket policy / lifecycle / KMS / versioning
+  ECR aegis/edge-agent, aegis/factory-a-log-adapter, aegis/edge-iot-publisher
+```
+
+### 사용자 흐름
+
+```text
+사용자
+    -> Route53 (dashboard.<신규 도메인>, Gabia 구매 후 위임)
+    -> CloudFront (+ WAF, OAC)
+    -> S3 (Vite + React 정적 SPA, 빌드 산출물)
+    브라우저 ─ Cognito Hosted UI 로그인 (OIDC PKCE, MFA TOTP)
+            ├ JWT 발급
+            └ Authorization: Bearer <JWT>로 API 호출
+              -> Route53 (api.<신규 도메인>)
+              -> ALB (HTTPS, ACM)
+              -> ECS Fargate Backend (FastAPI, JWT 앱 레벨 검증)
+                  -> DynamoDB LATEST/HISTORY (read)
+                  -> S3 processed (read, 장기 이력)
+                  -> RDS PostgreSQL (메타·권한 read)
+                  -> Redis (캐시 read + Pub/Sub subscribe)
+              <- WebSocket 푸시 (wss://api.<도메인>/ws/factories/{factory_id})
+```
+
+### 1번 VPC 토폴로지
+
+```text
+1번 VPC (Phase 1):
+  Public Subnet (ap-south-1a, 1c)
+    - Internet Gateway
+    - NAT Gateway × 1 (단일 AZ, ADR 0012)
+    - ALB (HTTPS, ACM)
+  Private App Subnet (ap-south-1a, 1c)
+    - ECS Fargate Dashboard Backend (FastAPI, 1 vCPU / 2 GB, desired/min 2; ADR 0030)
+    - ElastiCache Redis (cache.t4g.micro, 단일 노드)
+    - Lambda notifier (DDB Streams trigger, VPC-attach)
+  Private Data Subnet (ap-south-1a, 1c)
+    - RDS PostgreSQL (db.t4g.micro, Single-AZ, gp3 20GiB)
+  VPC Endpoint (Gateway type, 무료):
+    - S3, DynamoDB
+```
+
+### VPC 밖에 두는 자원 (managed/serverless)
+
+```text
+- S3 dashboard-web bucket (정적 SPA 호스팅, OAC, aegis-bucket-data와 분리된 신규 bucket)
+- CloudFront + WAF
+- Cognito User Pool + Hosted UI (관리자 전용, MFA Required)
+- Lambda data processor (IoT Rule trigger, 팀 합의 영역, 변경 없음)
+- Lambda report-generator (EventBridge schedule, Bedrock 호출, 팀원/후속)
+- Bedrock Nova Micro/Pro (AI 채팅 데이터 QA 구현 완료), 보고서 생성기용 Bedrock은 팀원/후속
+- EventBridge Scheduler (매일 09:00 KST 일간 보고서, 팀원/후속)
+- DynamoDB AEGIS-DynamoDB-FactoryStatus (LATEST + HISTORY, Streams 활성화)
+- DynamoDB aegis-daily-report (PK: report_date, SK: factory_id)
+- S3 aegis-bucket-data (raw/ + processed/ + reports/, 단일 bucket prefix 분리, ADR 0009)
+- Route53 hosted zone (신규 도메인, Admin UI minsoo-tech.cloud와 분리)
+- ACM (us-east-1: CloudFront, ap-south-1: ALB)
+```
+
+### 실시간 푸시 흐름 (ADR 0015)
+
+```text
+Lambda data processor -> DynamoDB LATEST (write)
+    │
+    ▼ DynamoDB Streams (NEW_AND_OLD_IMAGES)
+Lambda notifier (VPC-attach)
+    │
+    ▼ Redis PUBLISH channel "factory:update:<factory_id>"
+ElastiCache Redis Pub/Sub
+    │
+    ▼ SUBSCRIBE
+ECS Fargate Backend × N (모든 task가 subscribe → 자신의 WebSocket client에 fan-out)
+    │
+    ▼ WebSocket
+Dashboard Web 클라이언트
+```
+
+### LLM 일간 보고서 흐름 (ADR 0016, 팀원/후속 목표)
+
+```text
+EventBridge Scheduler (cron 0 0 * * ? * UTC = 09:00 KST)
+    │
+    ▼
+Lambda report-generator
+    ├── DynamoDB HISTORY (read, 지난 24h)
+    ├── S3 processed (read, 추세·이벤트)
+    └── Bedrock (invoke, 한국어 자연어 요약)
+        │
+        ▼
+    S3 reports/daily/yyyy={YYYY}/mm={MM}/dd={DD}/{factory_id}/report.md
+    DynamoDB aegis-daily-report (메타)
+
+Dashboard 보고서 탭 -> ALB -> ECS Backend -> S3 reports/daily/ (read) -> Markdown 렌더링
+```
+
+### 후속 (Phase 2~4)
+
+```text
+Phase 2 (Production-Ready):
+  - Timestream (DDB HISTORY 이전, 트리거: 비용 > $30/월 또는 시계열 쿼리 p95 > 1s)
+  - Kinesis Data Streams (트리거: 메시지율 > 분당 1000건)
+  - OpenSearch (트리거: 로그 검색 빈도 주 5회 이상)
+  - Multi-AZ RDS PostgreSQL / Redis (트리거: 상시 운영 결정)
+
+Phase 3 (AI/Analytics):
+  - EKS GPU 또는 SageMaker (트리거: 영상·음성·LLM fine-tune)
+  - Replay Builder, Near-miss Aggregator (트리거: Lambda p95 > 10s)
+  - Kinesis Data Analytics (트리거: 윈도우 집계 룰)
+
+Phase 4 (Multi-tenant / Compliance):
+  - Cognito + IdP federation
+  - CloudTrail + Config + Security Hub + GuardDuty
+  - WAF + Shield Advanced
+  - PrivateLink, Athena + Glue
+```
+
+### 상세 기준
+
+```text
+docs/planning/15_cloud_architecture_final.md       확정 토폴로지 + 결정 표
+docs/planning/16_data_dashboard_vpc_workplan.md    진입 순서
+docs/planning/17_expansion_roadmap.md              Phase 1~4 로드맵 + 트리거 표
+docs/planning/07_dashboard_vpc_extension_plan.md   보안 경계와 지연 기준 (그대로 유지)
+docs/specs/data_storage_pipeline.md                저장 모델 / DDB schema
+docs/changes/0006~0011                               이전 결정 ADR
+docs/changes/0012~0017                               Phase 1 통합 결정 ADR
+docs/changes/0032                                     overview 다이어그램 확정 ADR
+docs/architecture/drawio/agiespi_architecture_overview_final1.drawio   현재 overview source of truth (ADR 0032)
+docs/architecture/images/agiespi_architecture_overview_final3.drawio.png  overview PNG export
 ```
 
 ## 목표 Hub Namespace
@@ -160,8 +409,10 @@ ops-support
 | --- | --- |
 | `argocd` | 멀티 Spoke 배포 제어 |
 | `observability` | AMP, Prometheus 연동, 내부 관측 |
-| `risk` | Hub 배포 검증용 또는 임시 workload. 최신 목표에서는 Risk Engine을 1번 Data / Dashboard VPC 처리 영역으로 분리 |
-| `ops-support` | pipeline status 집계 |
+| `risk` | Hub 배포 검증용 또는 임시 workload. Phase 1에서는 Risk 계산을 Lambda data processor로 분리 |
+| `ops-support` | legacy pipeline status 집계 후보. Phase 1에서는 Lambda data processor가 DynamoDB에 `pipeline_status`를 기록 |
+
+Risk 계산·정규화·pipeline_status 판정은 1번 VPC 안 컨테이너가 아니라 Lambda data processor 내부 처리 단계다 (ADR 0007 Lambda data processor 부분 유효). Dashboard Backend는 이 결과를 read-only로 조회한다 (ADR 0012).
 
 ## Factory 역할
 
@@ -190,9 +441,11 @@ pipeline_status
 event
 ```
 
-현재 `factory-a`의 Grafana dashboard는 Risk Twin 전 단계의 로컬 관제 기준선이다. 후속 단계에서 이 값을 표준 schema, Risk Engine, Data / Dashboard VPC 관제 화면으로 연결한다.
+현재 `factory-a`의 Grafana dashboard는 Risk Twin 전 단계의 로컬 관제 기준선이다. 후속 단계에서 이 값을 표준 schema, Lambda data processor, DynamoDB/S3 processed, Data / Dashboard VPC 관제 화면으로 연결한다.
 
 ## 확장 우선순위
+
+### 워크스트림 공통 / 워크스트림 A (팀 합의, 본 환경 변경 없음)
 
 1. `factory-a` 현재 상태 문서화 완료
 2. Hub EKS 기준선 구성 완료, 필요 시 `infra/hub` Terraform apply와 `scripts/ansible` bootstrap 순서로 재생성
@@ -200,8 +453,38 @@ event
 4. Tailscale 또는 동등한 Hub-Spoke 연결 방식 확정
 5. GitHub Actions / ECR / ArgoCD ApplicationSet 구성
 6. Edge Agent 구현 및 IoT Core / S3 데이터 수집 경로 구성
-7. 1번 Data / Dashboard VPC, latest status store, Risk Engine 및 dashboard 구현
-8. `factory-b`, `factory-c` 테스트베드 확장
+
+### 워크스트림 B (본 환경, Phase 1)
+
+7. 1번 VPC 인프라 (`infra/data-dashboard/`):
+   - Public/Private App/Private Data subnet, NAT GW × 1, ALB
+   - VPC Endpoint (S3, DynamoDB)
+   - 신규 리소스 이름은 `KJW-AEGIS-Data-*` 또는 lowercase 제약 시 `kjw-aegis-data-*`
+8. 데이터 저장소·처리 (Lambda data processor는 팀 합의 영역, 변경 없음):
+   - DynamoDB `AEGIS-DynamoDB-FactoryStatus` (LATEST + HISTORY + Streams)
+   - DynamoDB `aegis-daily-report`
+   - S3 `aegis-bucket-data` prefix (`processed/`, `reports/`)
+   - RDS PostgreSQL
+   - ElastiCache Redis
+9. Backend·실시간:
+   - ECS Fargate Dashboard Backend (FastAPI)
+   - Lambda notifier (DDB Streams → Redis publish)
+   - WebSocket endpoint
+10. 인증·프론트:
+    - Cognito User Pool + Hosted UI
+    - Route53 + ACM (us-east-1, ap-south-1)
+    - CloudFront + WAF + S3 dashboard-web bucket
+    - Dashboard Web (Vite + React 정적 SPA)
+11. LLM 일간 보고서 (팀원/후속):
+    - Lambda report-generator + Bedrock Claude 3 Haiku
+    - EventBridge Scheduler
+12. `factory-b`, `factory-c` 테스트베드 확장 (워크스트림 A와 공동)
+
+### Phase 2~4 (트리거 기반 진행)
+
+13. Phase 2: Timestream / Kinesis / OpenSearch / Multi-AZ (트리거: `docs/planning/17_expansion_roadmap.md` 표)
+14. Phase 3: EKS GPU / SageMaker / Replay Builder / Near-miss Aggregator
+15. Phase 4: Multi-tenant / Compliance / PrivateLink
 
 ## 현재 구조로 가져오면 안 되는 것
 
@@ -215,8 +498,64 @@ GitHub Actions
 Tailscale
 Data / Dashboard VPC
 factory-b / factory-c
-Risk Score Engine
+Lambda data processor / Risk calculation
+ECS Fargate Backend / RDS PostgreSQL / Redis / WebSocket
 LLM 보고서
 ```
 
 이 항목들은 목표 구조 또는 후속 계획 문서에서만 관리한다.
+
+## 2026-05-14 수정 방향 (Risk 계산 통합)
+
+목표 데이터 평면은 `docs/specs/data_storage_pipeline.md`의 Lambda/DynamoDB 기준을 따른다.
+
+이전 `Risk Normalizer`, `Risk Score Engine`, `Event Processor`, `pipeline-status-aggregator` 표현은 별도 컨테이너 서비스가 아니라 Lambda data processor 내부 처리 단계로 해석한다.
+
+## 2026-05-18 수정 방향 (Phase 1 통합)
+
+초안에서 분리됐던 Phase 1 MVP(서버리스 최소 구성)와 Phase 1.5(컨테이너 확장)는 Phase 1으로 통합한다. 본 환경에서 실제로 배포·운영하는 단일 목표는 다음 구성이다.
+
+```text
+ECS Fargate Dashboard Backend (FastAPI)     ADR 0012
+RDS PostgreSQL                              ADR 0017
+ElastiCache Redis (캐시 + Pub/Sub)           ADR 0014
+WebSocket 실시간 (DDB Streams + notifier)    ADR 0015
+Bedrock 일간 보고서                         ADR 0016 (팀원/후속)
++ 팀 합의 영역 (IoT Core, Lambda data processor, DDB/S3) 변경 없음
+```
+
+ADR 0007 Dashboard API 부분과 ADR 0011 NAT GW 제거 결정은 ADR 0012로 supersede된다. ADR 0007 Lambda data processor 부분은 그대로 유효하다.
+
+운영 패턴은 데모 직전 `scripts/build/build-data-dashboard.sh`, 직후 `scripts/destroy/destroy-data-dashboard.sh` 사이클로 진행한다. 미가동 시 VPC/NAT/ALB/ECS/RDS/Redis/Lambda 런타임 비용은 0에 수렴하지만, `infra/data-dashboard-permanent`/`infra/data-dashboard-dns` 영구 자원과 RDS final snapshot 비용은 남는다(`docs/ops/15_aws_cost_baseline.md`).
+
+## 2026-05-26 수정 방향 (Step 6 완료 / Frontend 경로 구분)
+
+### Dashboard Backend 구현 상태
+
+```text
+구현 완료:
+  apps/dashboard-backend/ — FastAPI
+  REST: /healthz / /readyz / /factories / /factories/{id} / /factories/{id}/history / /reports / /reports/{date}/{id} / /chat/query / /image-snapshots
+  WebSocket: /ws/factories/{factory_id} (JWT via ?token= 파라미터)
+  Cognito JWT 앱 레벨 검증, RDS RBAC, AEGIS-DynamoDB-FactoryStatus 기준 DDB 조회, S3 reports/image_snapshot/processed_agg 조회
+
+배포/운영:
+  ECR aegis/dashboard-backend repo, ECS Fargate Task Definition / Service, ALB HTTPS listener rule은 구현·배포 검증 완료
+  현재는 2026-06-16 `infra/data-dashboard` destroy로 API/ECS/ALB runtime 비활성, 재빌드 시 복구
+```
+
+### Frontend 경로 구분 (필수)
+
+```text
+frontend/           = 화면 설계 prototype/reference
+                      기존 Aegis-pi/, Aegis-pi2/ prototype 정리 경로
+                      S3/CloudFront 배포 source로 직접 사용하지 않는다
+
+apps/dashboard-web/ = 운영 배포용 공식 Vite + React SPA (예정)
+                      Phase 1 Step 8 마이그레이션에서 신설
+                      S3 dashboard-web bucket 빌드 산출물(dist/) 배포 대상
+
+Step 8 작업 방향:
+  frontend/ prototype을 참고해 apps/dashboard-web/ Vite + React로 공식 구현
+  WebSocket JWT는 ?token= 파라미터로 전달 (backend 구현과 정렬)
+```

@@ -1,13 +1,28 @@
 # Cloud Expansion Draw.io Guide
 
 상태: draft
-기준일: 2026-04-29
+기준일: 2026-06-08
+수정 이력:
+  - 2026-06-08  ADR 0032 반영. `re4~re7` 세대별 다이어그램을 단일 overview(`agiespi_architecture_overview_final1.drawio` / `images/agiespi_architecture_overview_final3.drawio.png`)로 통합하고 source of truth 갱신. Phase 1 Step 0~10 구현(Cloud Infra Collector·notifier DLQ·OIDC 웹배포·RBAC·`CLOUD#infra`·`GRAPH#5M`·ECS Auto Scaling) 반영.
+  - 2026-05-19  ADR 0017 반영. 1번 VPC 메타 저장소를 RDS PostgreSQL로 변경.
+  - 2026-05-18  ADR 0012~0016 반영. Phase 1 통합 결정으로 `03_re6_workstream_b_enhanced.drawio` 추가. `02_re5_two_vpc_target.drawio`는 pre-Phase 1 overview historical reference로 유지.
+  - 2026-05-15  ADR 0006~0011 반영. 신규 목표 다이어그램 `02_re5_two_vpc_target.drawio` 추가. 기존 `01_re4.drawio`는 pre-2VPC 단일 VPC historical reference로 유지.
+  - 2026-04-29  초안
 
 ## 목적
 
 M0 `factory-a` Safe-Edge 기준선을 AWS Hub 중심의 멀티 Spoke 구조로 확장할 때, draw.io에서 그릴 아키텍처 다이어그램의 구성 기준을 정리한다.
 
 이 문서는 구현 완료 상태가 아니라 M1~M7 클라우드 확장 목표 구조를 도식화하기 위한 가이드다.
+
+## 현재 다이어그램 파일
+
+| 파일 | 위상 | 비고 |
+| --- | --- | --- |
+| `drawio/agiespi_architecture_overview_final1.drawio` / `images/agiespi_architecture_overview_final3.drawio.png` | **현재 source of truth** (2026-06-08, ADR 0032) | data/dashboard end-to-end 단일 overview. AWS managed / 1번 VPC / 2번 VPC / Factory A·B·C + Line Legend. Cloud Infra Collector(EventBridge→Fast 1m/Slow 5m→`CLOUD#infra`) · notifier→SQS DLQ · GitHub OIDC 웹배포(S3 sync + CF invalidation) · Cognito Admin API + RDS RBAC(`app_user`/`user_factory_access`/`audit_log`) · DynamoDB `GRAPH#5M`/`CLOUD#infra` · ECS x2 AutoScaling · Report Generator(factory + cloud-infra 일간 → Bedrock) 포함 |
+| `re4` ~ `re7` (`01_re4` / `02_re5` / `03_re6` / `04_re7`) | 통합 제거 (ADR 0032) | 세대별 다이어그램. 단일 overview로 통합되어 더 이상 유지하지 않음 |
+
+신규 overview 다이어그램은 단일 페이지 Overview 형태다. 후속에 본 가이드의 5개 분할(Overview / Data Plane / Control Plane / CI/CD / Dashboard Access) 권장에 맞춰 페이지를 추가한다. Phase 1 한정 추가 권장 페이지로 **Backend Container Tier**(ECS Backend·RDS PostgreSQL·Redis·notifier 상세)를 별도 페이지로 두면 인터뷰·발표 시 깊이 있는 설명이 가능하다.
 
 ## 최신 기준
 
@@ -24,20 +39,21 @@ M0 `factory-a` Safe-Edge 기준선을 AWS Hub 중심의 멀티 Spoke 구조로 �
   - Grafana
 
 1번 VPC: Data / Dashboard VPC
-  - Event Processor
-  - Risk Engine
+  - Lambda data processor
+  - DynamoDB LATEST/HISTORY
+  - S3 processed
   - Dashboard Backend/API
   - Dashboard Web
-  - RDS / Redis / OpenSearch
 ```
 
-그릴 다이어그램은 다섯 장으로 나눈다.
+그릴 다이어그램은 다섯 장으로 나눈다 (Phase 1 한정 6장 권장).
 
 1. Overview
 2. Data Plane
 3. Control Plane
 4. CI/CD
 5. Dashboard Access
+6. (Phase 1 추가 권장) Backend Container Tier — ECS Backend, RDS PostgreSQL, Redis, Lambda notifier, WebSocket fan-out 흐름
 
 ## 공통 표현 규칙
 
@@ -91,14 +107,14 @@ AWS IoT Core
 S3
 ECR
 AMP
-Dashboard VPC
+Control / Management VPC
+Data / Dashboard VPC
 Route53 / ALB / WAF / Auth
 Tailscale Hub-Spoke
 GitHub Actions
 ApplicationSet
-Risk Normalizer
-Risk Score Engine
-pipeline-status-aggregator
+Lambda data processor
+DynamoDB LATEST/HISTORY
 factory-b / factory-c
 ```
 
@@ -117,18 +133,17 @@ factory-b / factory-c
                             |
                             | source / manifests / actions
                             v
-                    AWS Cloud / Processing VPC
+                    AWS Cloud
         +------------------------------------------------+
-        | EKS Hub: ArgoCD | Risk Services | Ops Support   |
-        | IoT Core | S3 raw/processed | ECR | AMP         |
-        | latest status store                             |
+        | Control VPC: EKS Hub | ArgoCD | Grafana | AMP   |
+        | Managed: IoT Core | Lambda | S3 | DynamoDB | ECR |
         +------------------------------------------------+
                             |
-                            | read-only IAM, no VPC peering
+                            | DynamoDB/S3 read-only IAM, no VPC peering
                             v
-                    Dashboard VPC
+                    Data / Dashboard VPC
         +------------------------------------------------+
-        | Route53 | ALB | WAF/Auth | Dashboard Web/API    |
+        | Route53 | CloudFront/ALB | Auth | Dashboard Web/API |
         +------------------------------------------------+
              ^              ^              ^
              |              |              |
@@ -143,22 +158,20 @@ factory-b / factory-c
 
 ### 포함할 리소스
 
-AWS Cloud / Hub 경계 안에는 아래 리소스를 둔다.
+AWS Cloud / Control 경계와 managed service 영역에는 아래 리소스를 둔다.
 
 | 리소스 | 역할 |
 | --- | --- |
 | EKS Cluster | Hub 실행 기반 |
 | ArgoCD | 멀티 Spoke 배포 제어 |
 | IoT Core | Edge/Spoke 데이터 수신 진입점 |
-| S3 | 원본 데이터 장기 적재 |
+| S3 raw/processed | 원본과 처리 결과 장기 적재 |
 | ECR | 컨테이너 이미지 저장소 |
 | AMP | Prometheus 메트릭 중앙 저장 |
-| latest status store | 대시보드 빠른 조회용 최신 상태 |
-| Risk Normalizer | S3 원본 데이터 정규화 |
-| Risk Score Engine | 공장별 위험도 계산 |
-| pipeline-status-aggregator | IoT/S3 지연과 누락 상태 계산 |
+| DynamoDB LATEST/HISTORY | 대시보드 빠른 조회용 현재 상태와 최근 그래프 |
+| Lambda data processor | 정규화, Risk 계산, pipeline_status 계산 |
 
-Dashboard VPC 경계 안에는 아래 리소스를 둔다.
+Data / Dashboard VPC 경계 안에는 아래 리소스를 둔다.
 
 | 리소스 | 역할 |
 | --- | --- |
@@ -186,21 +199,21 @@ Dashboard VPC 경계 안에는 아래 리소스를 둔다.
 | ArgoCD | GitHub manifests | ApplicationSet이 chart/values를 감시 |
 | ArgoCD | Spoke K3s | Tailscale 경유 Kubernetes API sync |
 | Spoke Edge Agent | IoT Core | MQTT publish |
-| IoT Core | S3 | IoT Rule 기반 원본 JSON 적재 |
-| Risk Normalizer | S3 | 원본 데이터 읽기 |
-| Risk Normalizer | Risk Score Engine | 정규화 결과 전달 |
-| Risk Score Engine | latest status store / S3 processed | Risk Twin 결과 저장 |
-| pipeline-status-aggregator | IoT Core / S3 | 수신/적재 상태 확인 |
-| Dashboard Web/API | latest status store / S3 processed | read-only 중앙 관제 조회 |
+| IoT Core | S3 raw | IoT Rule 기반 원본 JSON 적재 |
+| IoT Core | Lambda data processor | IoT Rule 또는 Lambda action으로 수신 메시지 전달 |
+| Lambda data processor normalization step | Lambda data processor risk logic | 정규화 결과 전달 |
+| Lambda data processor risk logic | DynamoDB LATEST/HISTORY / S3 processed | Risk Twin 결과 저장 |
+| Lambda data processor pipeline_status logic | IoT Core / S3 | 수신/적재 상태 확인 |
+| Dashboard Web/API | DynamoDB LATEST/HISTORY / S3 processed | read-only 중앙 관제 조회 |
 
 ### draw.io 권장 형태
 
 - AWS Cloud는 가장 큰 박스로 둔다.
-- Processing VPC와 Dashboard VPC를 AWS Cloud 안의 별도 큰 박스로 둔다.
-- EKS Hub는 Processing VPC 안의 큰 박스로 둔다.
+- Control / Management VPC와 Data / Dashboard VPC를 AWS Cloud 안의 별도 큰 박스로 둔다.
+- EKS Hub는 Control / Management VPC 안의 큰 박스로 둔다.
 - IoT Core, S3, ECR, AMP는 EKS 바깥의 AWS managed service로 둔다.
-- ArgoCD, Risk Normalizer, Risk Score Engine, pipeline-status-aggregator는 EKS 안에 둔다.
-- Dashboard VPC와 Processing VPC 사이에는 VPC Peering을 그리지 않는다. 대신 `read-only IAM / managed storage` 화살표만 그린다.
+- ArgoCD와 Grafana는 EKS/Control VPC 안에 두고, Lambda data processor와 DynamoDB/S3는 AWS managed service 영역에 둔다.
+- Dashboard VPC와 Control VPC 사이에는 VPC Peering을 그리지 않는다. Dashboard는 `read-only IAM / managed storage` 화살표로 DynamoDB/S3 processed를 조회하게 그린다.
 - 각 factory는 AWS Cloud 바깥의 독립 박스로 둔다.
 - Tailscale은 Hub와 Spoke 사이의 네트워크 오버레이 박스 또는 점선 영역으로 표현한다.
 
@@ -218,21 +231,19 @@ Dashboard VPC 경계 안에는 아래 리소스를 둔다.
 factory-a real input
     -> Edge Agent
     -> AWS IoT Core
-    -> IoT Rule
-    -> S3 raw data
-    -> Risk Normalizer
-    -> Risk Score Engine
-    -> S3 processed / latest status store
+        -> IoT Rule -> S3 raw data
+        -> Lambda data processor
+            -> DynamoDB LATEST/HISTORY
+            -> S3 processed
     -> Dashboard Web/API
 
 factory-b / factory-c dummy input
     -> Dummy Sensor
     -> AWS IoT Core
-    -> IoT Rule
-    -> S3 raw data
-    -> Risk Normalizer
-    -> Risk Score Engine
-    -> S3 processed / latest status store
+        -> IoT Rule -> S3 raw data
+        -> Lambda data processor
+            -> DynamoDB LATEST/HISTORY
+            -> S3 processed
     -> Dashboard Web/API
 ```
 
@@ -293,12 +304,9 @@ payload
 
 | source_type | 생성 위치 | Hub 처리 |
 | --- | --- | --- |
-| `sensor` | Edge Agent 또는 Dummy Sensor | S3 적재 후 정규화, Risk 입력 |
-| `system_status` | Edge Agent 또는 Dummy Sensor | S3 적재 후 정규화, Risk 입력 |
-| `device_status` | Edge Agent | S3 적재 후 정규화, 장치 이상 판단 |
-| `workload_status` | Edge Agent | S3 적재 후 정규화, Pod/placement 이상 판단 |
-| `pipeline_heartbeat` | Edge Agent | S3 적재 후 pipeline 상태 판단 |
-| `pipeline_status` | Hub `ops-support` | IoT/S3 상태를 집계해 Risk 입력 |
+| `factory_state` | Edge Agent | Lambda 처리 후 DynamoDB/S3 processed 저장 |
+| `infra_state` | Edge Agent | Lambda 처리 후 DynamoDB/S3 processed 저장 |
+| `pipeline_status` | Lambda data processor | IoT/S3 상태를 집계해 DynamoDB LATEST/HISTORY에 저장 |
 | `event` | 구조만 예약 | MVP에서는 점수 반영 제외 |
 
 ### S3 파티션
@@ -307,52 +315,39 @@ S3는 공장/source_type/날짜 기준으로 그린다.
 
 ```text
 s3://<bucket>/
-  factory-a/
-    sensor/yyyy/MM/dd/
-    system_status/yyyy/MM/dd/
-    device_status/yyyy/MM/dd/
-    workload_status/yyyy/MM/dd/
-    pipeline_heartbeat/yyyy/MM/dd/
-  factory-b/
-    sensor/yyyy/MM/dd/
-    system_status/yyyy/MM/dd/
-  factory-c/
-    sensor/yyyy/MM/dd/
-    system_status/yyyy/MM/dd/
+  raw/factory-a/factory_state/yyyy=YYYY/mm=MM/dd=DD/<message_id>.json
+  raw/factory-a/infra_state/yyyy=YYYY/mm=MM/dd=DD/<message_id>.json
+  processed/risk-score/factory-a/yyyy=YYYY/mm=MM/dd=DD/hh=HH/<message_id>.json
 ```
 
-### Hub 내부 데이터 처리
+### Cloud-side 데이터 처리
 
-EKS Hub 안의 `risk` namespace에는 아래 박스를 둔다.
-
-```text
-Risk Normalizer
-Risk Score Engine
-```
-
-EKS Hub 안의 `ops-support` namespace에는 아래 박스를 둔다.
+Data / Dashboard VPC 또는 managed service 영역에는 아래 박스를 둔다.
 
 ```text
-pipeline-status-aggregator
+Lambda data processor
+DynamoDB LATEST/HISTORY
+S3 processed
 ```
 
 처리 관계는 아래처럼 그린다.
 
 | From | To | 라벨 |
 | --- | --- | --- |
-| S3 raw data | Risk Normalizer | read raw JSON |
-| Risk Normalizer | Risk Score Engine | normalized input |
-| IoT Core | pipeline-status-aggregator | latest received check |
-| S3 | pipeline-status-aggregator | latest object check |
-| pipeline-status-aggregator | Risk Score Engine | pipeline_status |
-| Risk Score Engine | latest status store | current risk/status |
-| Risk Score Engine | S3 processed | processed history |
-| Dashboard Web/API | latest status store | read latest |
+| IoT Core | Lambda data processor normalization step | Lambda action / message event |
+| IoT Core | S3 raw data | IoT Rule raw archive |
+| Lambda data processor normalization step | Lambda data processor risk logic | normalized input |
+| IoT Core | Lambda data processor pipeline_status logic | latest received check |
+| S3 | Lambda data processor pipeline_status logic | latest object check |
+| Lambda data processor pipeline_status logic | Lambda data processor risk logic | pipeline_status |
+| Lambda data processor risk logic | DynamoDB LATEST/HISTORY | current risk/status and recent graph |
+| Lambda data processor risk logic | S3 processed | processed history |
+| Dashboard Web/API | DynamoDB LATEST/HISTORY | read latest/recent graph |
 | Dashboard Web/API | S3 processed | drill-down |
 
 ### Risk Twin 출력
 
-Risk Score Engine 옆에는 아래 출력 note를 둔다.
+Lambda data processor risk logic 옆에는 아래 출력 note를 둔다.
 
 ```text
 risk_score: 0~100
@@ -408,8 +403,8 @@ ops-support
 | --- | --- |
 | `argocd` | Spoke 클러스터 등록, ApplicationSet sync |
 | `observability` | Grafana와 Prometheus/AMP 연동 |
-| `risk` | Risk 서비스 배포 대상 |
-| `ops-support` | pipeline 상태 집계 서비스 배포 대상 |
+| `risk` | legacy/M1 검증용. 최신 MVP에서는 Risk 서비스 배포 대상 아님 |
+| `ops-support` | legacy pipeline 집계 후보. 최신 MVP에서는 Lambda가 `pipeline_status` 계산 |
 
 ### Tailscale 경계
 
@@ -555,10 +550,7 @@ ECR에는 서비스별 repository를 둔다.
 
 ```text
 edge-agent
-dummy-sensor
-risk-normalizer
-risk-score-engine
-pipeline-status-aggregator
+# Lambda를 container image로 배포할 때만 후속으로 aegis-data-processor 추가
 ```
 
 이미지 태그는 기본적으로 git sha 기반으로 표시한다.
@@ -617,7 +609,7 @@ factory-b / factory-c:
 
 ### 목적
 
-관리자가 Tailscale 없이 대시보드에 접근하고, Dashboard VPC가 Processing VPC와 직접 네트워크 연결 없이 managed storage만 조회하는 구조를 보여준다.
+관리자가 Tailscale 없이 대시보드에 접근하고, Data / Dashboard VPC가 Control / Management VPC와 직접 네트워크 연결 없이 managed storage만 조회하는 구조를 보여준다.
 
 이 그림은 `docs/planning/07_dashboard_vpc_extension_plan.md`의 핵심 구조를 시각화한다.
 
@@ -630,19 +622,18 @@ Admin Browser
   -> WAF
   -> Cognito/Auth
   -> Dashboard Web/API
-  -> latest status store
+  -> DynamoDB LATEST/HISTORY
   -> S3 processed
 ```
 
-Processing VPC 쪽은 아래처럼 표현한다.
+IoT Core 이후 data processing은 아래처럼 표현한다.
 
 ```text
 IoT Core
-  -> S3 raw
-  -> Risk Normalizer
-  -> Risk Score Engine
-  -> S3 processed
-  -> latest status store
+  -> IoT Rule -> S3 raw
+  -> Lambda data processor
+      -> DynamoDB LATEST/HISTORY
+      -> S3 processed
 ```
 
 ### 금지 경로 표현
@@ -650,7 +641,7 @@ IoT Core
 아래 연결은 그리지 않거나, 빨간 점선 `no direct network path`로 표시한다.
 
 ```text
-Dashboard VPC -> Processing VPC private service
+Dashboard VPC -> Control VPC private service
 Dashboard VPC -> EKS admin API
 Dashboard VPC -> ArgoCD admin API
 Dashboard VPC -> Spoke K3s API
@@ -671,8 +662,8 @@ full status: 30초
 
 ### Overview
 
-- [ ] AWS Cloud / Processing VPC / Dashboard VPC / 3개 Spoke / GitHub 경계가 보인다.
-- [ ] Hub가 중앙 배포와 중앙 수집/처리를 담당하고, Dashboard VPC가 관리자 조회를 담당하는 것이 보인다.
+- [ ] AWS Cloud / Control VPC / Data-Dashboard VPC / 3개 Spoke / GitHub 경계가 보인다.
+- [ ] Hub가 중앙 배포와 관측을 담당하고, Data / Dashboard VPC와 managed storage가 데이터 처리 결과 조회를 담당하는 것이 보인다.
 - [ ] `factory-a`는 운영형, `factory-b/c`는 테스트베드형으로 구분된다.
 - [ ] 현재 완료된 M0와 후속 M1~M7이 섞여 보이지 않는다.
 
@@ -681,9 +672,9 @@ full status: 30초
 - [ ] Edge/Dummy 입력이 IoT Core로 들어간다.
 - [ ] IoT Core Rule이 S3에 적재한다.
 - [ ] S3 파티션이 factory/source_type/date 기준으로 보인다.
-- [ ] Risk Normalizer와 Risk Score Engine의 역할이 분리된다.
+- [ ] Lambda data processor 내부에 normalization, risk logic, pipeline_status 계산 단계가 보인다.
 - [ ] `pipeline_status`가 Edge가 아니라 Hub derived임이 보인다.
-- [ ] Dashboard Web/API가 latest status store와 S3 processed를 조회하는 구조가 보인다.
+- [ ] Dashboard Web/API가 DynamoDB LATEST/HISTORY와 S3 processed를 조회하는 구조가 보인다.
 
 ### Control Plane
 
@@ -704,9 +695,9 @@ full status: 30초
 
 ### Dashboard Access
 
-- [ ] Route53 -> ALB -> WAF/Auth -> Dashboard Web/API 접근 경로가 보인다.
-- [ ] Dashboard VPC와 Processing VPC 사이에 VPC Peering/TGW가 없다.
-- [ ] Dashboard API가 processed S3와 latest status store만 read-only로 조회한다.
+- [ ] Route53 -> CloudFront/ALB -> Auth -> Dashboard Web/API 접근 경로가 보인다. WAF/Shield는 후속 보안 강화 후보로 분리한다.
+- [ ] Dashboard VPC와 Control VPC 사이에 VPC Peering/TGW가 없다.
+- [ ] Dashboard API가 DynamoDB LATEST/HISTORY와 S3 processed만 read-only로 조회한다.
 - [ ] Tailscale은 Dashboard 접근망이 아니라 Control Plane 접근망으로 구분된다.
 
 ## 권장 파일 분리
@@ -733,4 +724,42 @@ Dashboard VPC: 연한 노랑
 Network/Tailscale: 점선 보라
 Data flow: 실선
 Control flow: 점선
+```
+
+## 2026-05-14 수정 방향 (Risk 계산 통합)
+
+이 다이어그램 가이드는 Lambda/DynamoDB 최신 데이터 처리 기준을 따른다.
+
+이전 `Risk Normalizer`, `Risk Score Engine`, `pipeline-status-aggregator`, `Event Processor` 박스는 별도 EKS/ECR 서비스가 아니라 Lambda data processor 내부 처리 단계로 그린다.
+
+## 2026-05-18 수정 방향 (Phase 1 통합)
+
+Phase 1 통합 결정(ADR 0012~0017)으로 Dashboard Backend가 Lambda → ECS Fargate 컨테이너로 전환되었다. 다이어그램에서 표현해야 할 변화:
+
+- 1번 VPC는 **비어있지 않다**. Public/Private App/Private Data 3-tier로 채워 둔다
+- ALB(Public) → ECS Fargate Backend(Private App) → RDS PostgreSQL(Private Data) 3-tier 흐름
+- ElastiCache Redis(Private App) — 캐시 + Pub/Sub 두 가지 역할
+- Lambda notifier(Private App, VPC-attach) — DDB Streams → Redis publish
+- WebSocket 푸시 흐름은 일반 데이터 흐름과 시각적으로 구분 (실선 굵게 또는 별도 색상)
+- Bedrock + Lambda report-generator + EventBridge Scheduler — VPC 밖 managed service 영역
+- NAT Gateway × 1을 Public Subnet에 도시. ECR pull, Bedrock, Secrets Manager egress 경로 명시
+
+최신 데이터 흐름:
+
+```text
+Edge Agent
+  -> IoT Core
+      -> IoT Rule -> S3 raw
+      -> Lambda data processor (팀 합의 영역)
+          -> DynamoDB LATEST -> DynamoDB Streams -> Lambda notifier -> Redis Pub/Sub
+                                                                       -> ECS Backend SUBSCRIBE
+                                                                       -> WebSocket push
+          -> DynamoDB HISTORY
+          -> S3 processed
+  -> ALB -> ECS Fargate Backend (read-only 조합)
+              -> DDB LATEST/HISTORY
+              -> S3 processed
+              -> RDS PostgreSQL (메타·권한)
+              -> Redis (캐시)
+  -> EventBridge schedule -> Lambda report-generator -> Bedrock -> S3 reports/
 ```

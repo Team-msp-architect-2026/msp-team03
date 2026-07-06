@@ -1,4 +1,4 @@
-# Change 0022 - DataProcessor freshness refresh
+# Change 0038 - DataProcessor freshness refresh
 
 상태: accepted
 기준일: 2026-05-29

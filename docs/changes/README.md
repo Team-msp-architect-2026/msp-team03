@@ -1,63 +1,10 @@
-# README.md 통합 초안
-
-> Phase 2 source-preserving merge. Same-path Markdown differed between sources.
-
-## [Aegis-pi 기준]
-
 # Change Records
 
 상태: source of truth
-기준일: 2026-06-09
+기준일: 2026-06-17
 
-## 목적
-
-이 디렉터리는 초기 계획과 실제 구현/운영 기준이 달라진 결정을 추적한다.
-
-운영 문서는 현재 기준을 설명하고, 변경 기록은 왜 계획이 바뀌었는지와 어떤 영향을 남겼는지 설명한다.
-
-## 기록 기준
-
-- 계획과 실제 구현이 달라진 경우 기록한다.
-- 장애 테스트, 운영 안정성, 보안, 비용, 보존 정책에 영향을 주는 변경은 반드시 기록한다.
-- 단순 오탈자나 문서 표현 보정은 기록하지 않는다.
-- SSH 비밀번호, token, certificate private key 같은 민감 정보는 기록하지 않는다.
-
-## 목록
-
-| ID | 제목 | 상태 | 결정일 | 영향 범위 |
-| --- | --- | --- | --- | --- |
-| 0001 | AI snapshot storage: Longhorn PVC -> node-local hostPath | accepted | 2026-04-29 | M0, ai-apps, failover |
-| 0002 | Failback controller: Kubernetes CronJob -> master OS cron | accepted | 2026-04-29 | M0, failback |
-| 0003 | NFS cold storage and hot/cold tiering deferred | accepted | 2026-04-29 | M0, data retention |
-| 0004 | GitOps source: local repo -> GitHub repo + ArgoCD UI sync | accepted | 2026-04-28 | M0, deployment |
-| 0018 | IoT Rule factory-c raw S3 extension | accepted | 2026-05-20 | M5, IoT Core, S3 raw |
-| 0019 | factory-c Windows VirtualBox master/worker cluster | accepted | 2026-05-20 | M5, factory-c, K3s networking |
-| 0020 | Hub-only rebuild spoke registration and dummy generator operations | accepted | 2026-05-21 | Hub rebuild, Spoke registration, factory-b/c dummy ops |
-| 0021 | DynamoDB: infra/data-pipeline → infra/foundation | accepted | 2026-05-21 | M4, infra/foundation, infra/data-pipeline, destroy 순서 제약 |
-| 0022 | DataProcessor freshness refresh | accepted | 2026-05-29 | M4/M6, Lambda DataProcessor, EventBridge Scheduler, DynamoDB LATEST, Risk Score |
-| 0023 | Cloud alert noise reduction and Hub-only data collection continuity | accepted | 2026-06-04 | Cloud collectors, RiskAlertDispatcher, Hub rebuild, data-pipeline, operating docs |
-| 0024 | YOLOv8n instead of OpenCV ML for Edge AI detection | accepted | 2026-06-08 | factory-a, ai-apps, Safe-Edge AI, latency |
-| 0032 | Persistent MQTT for IoT Fleet Connectivity | accepted | 2026-06-09 | edge-iot-publisher, AWS IoT Fleet Indexing, factory-a/b/c connectivity |
-
-## 파일 형식
-
-각 변경 기록은 아래 항목을 가진다.
-
-```text
-기존 계획
-변경된 실제 기준
-변경 이유
-영향
-업데이트 필요한 문서
-검증
-```
-
-## [dashboard_vpc 기준]
-
-# Change Records
-
-상태: source of truth
-기준일: 2026-06-04
+수정 이력:
+- 2026-06-17  실제 `docs/changes/00*.md` 목록과 0034/0035 코드 반영 상태 기준으로 인덱스 정합성 갱신.
 
 ## 목적
 
@@ -83,7 +30,7 @@
 | 0005 | Workstream split: team -> 2번 Control/Management VPC, this env -> 1번 Data/Dashboard VPC | accepted | 2026-05-15 | M3~M6, 작업 환경 분리 |
 | 0006 | Dashboard frontend: Vite + React 정적 SPA + S3/CloudFront | accepted | 2026-05-15 | M6, frontend, 1번 VPC |
 | 0007 | Dashboard API runtime: Lambda + API Gateway, Lambda는 VPC 밖 | Dashboard API 부분 superseded by 0012 / Lambda data processor 부분 accepted | 2026-05-15 | M6, Lambda, 1번 VPC |
-| 0008 | Dashboard 인증: Cognito User Pool (관리자 전용) + API Gateway Authorizer | accepted | 2026-05-15 | M6, 인증/인가 |
+| 0008 | Dashboard 인증: Cognito User Pool (관리자 전용). API 검증은 0012/0031 이후 ALB+ECS 앱 레벨 JWT/RDS RBAC로 정정 | accepted, amended by 0012/0031 | 2026-05-15 | M6, 인증/인가 |
 | 0009 | S3 저장소: `aegis-bucket-data` 단일 bucket + prefix 분리 | accepted | 2026-05-15 | M4, S3, 워크스트림 합류 |
 | 0010 | Dashboard 도메인: Gabia 신규 + Route53 위임 + Admin UI 도메인과 분리 | accepted | 2026-05-15 | M6, 도메인/DNS |
 | 0011 | 1번 Data/Dashboard VPC NAT Gateway 제거 | superseded by 0012 | 2026-05-15 | M4/M6, 1번 VPC 비용/네트워크 |
@@ -91,7 +38,7 @@
 | 0013 | 메타데이터 저장소: Aurora Serverless v2 PostgreSQL | superseded by 0017 | 2026-05-18 | M6, 1번 VPC, 관계형 DB |
 | 0014 | 실시간 캐시 + Pub/Sub: ElastiCache Redis | accepted | 2026-05-18 | M6, 1번 VPC, 실시간 |
 | 0015 | Dashboard 실시간 푸시: WebSocket + DynamoDB Streams | accepted | 2026-05-18 | M6, 실시간 통신, DDB table 기준은 0022 |
-| 0016 | LLM 일간 보고서: Amazon Bedrock + EventBridge schedule | accepted | 2026-05-18 | M6, AI/LLM, 보고 자동화 |
+| 0016 | LLM 일간 보고서: Amazon Bedrock + EventBridge schedule | accepted, generator deferred; S3 조회는 0029 구현 | 2026-05-18 | M6, AI/LLM, 보고 자동화 |
 | 0017 | 메타데이터 저장소: RDS PostgreSQL | accepted | 2026-05-19 | M6, 1번 VPC, 관계형 DB, 비용 |
 | 0018 | IoT Topic Rule 확장: factory-a 단일 구독 → factory-c 추가 구독 | accepted | 2026-05-19 | M4 데이터 평면, M5 factory-c, 워크스트림 A↔B 합류 |
 | 0019 | factory-c 토폴로지: single-node → master + worker (2-VM K3s cluster) | accepted | 2026-05-19 | M5 VM Spoke 확장, factory-c testbed, 시연 표현 |
@@ -107,9 +54,16 @@
 | 0029 | Dashboard 보고서 조회: DynamoDB `aegis-daily-report` 대신 S3 `reports/daily/` Markdown read | accepted | 2026-06-02 | M6, apps/dashboard-backend/web, S3 reports prefix, ECS IAM |
 | 0030 | ECS backend right-sizing(0.5→1 vCPU) + Application Auto Scaling(min 2, ALBRequestCountPerTarget 40 + CPU 50%) | accepted | 2026-06-04 | M6, infra/data-dashboard ECS, 비용 baseline |
 | 0031 | Dashboard RBAC 사용자 관리: Cognito 로그인 + RDS 권한 모델 | accepted | 2026-06-04 | M6, apps/dashboard-backend/web, Cognito, RDS PostgreSQL |
-| 0035 | 아키텍처 Overview 다이어그램 확정: `re4~re7` 통합 → 단일 overview, Phase 1 Step 0~10 반영 | accepted | 2026-06-08 | docs/architecture overview, M4/M6 시각화, ADR 0016~0031 매핑 |
-| 0033 | 챗봇 데이터 QA 아키텍처: Tool-based QA + 제한적 RAG, 결정형 라우팅 우선, Bedrock LLM은 evidence 설명 계층 | accepted | 2026-06-08 | M6, apps/dashboard-backend(/chat)/web, Bedrock, ECS IAM, DDB/S3/RDS, (후속)image 합류 |
-| 0034 | 챗봇 LLM 라우팅: 결정형 파서 앞에 LLM Resolve(Converse tool-use, Haiku) 추가 + 규칙 fallback + spike_check 도구. ADR 0033 후속 옵션 채택 | proposed | 2026-06-09 | M6, apps/dashboard-backend(/chat: chat·bedrock·router·config), Bedrock Converse 1콜, 비용 |
+| 0032 | 아키텍처 Overview 다이어그램 확정: `re4~re7` 통합 → 단일 overview, Phase 1 Step 0~10 반영 | accepted | 2026-06-08 | docs/architecture overview, M4/M6 시각화, ADR 0016~0031 매핑 |
+| 0033 | 챗봇 데이터 QA 아키텍처: Tool-based QA + 제한적 RAG, 결정형 라우팅 우선, Bedrock LLM은 evidence 설명 계층 | accepted | 2026-06-08 | M6, apps/dashboard-backend(/chat)/web, Bedrock, ECS IAM, DDB/S3/RDS/image_snapshot. 이미지 생산은 워크스트림 A 합류 |
+| 0034 | 챗봇 LLM 라우팅: 결정형 파서 앞에 LLM Resolve(Converse tool-use) 추가 + 규칙 fallback + spike_check 도구. 모델 기본값은 ADR 0035가 Nova로 후속 보정 | accepted | 2026-06-09 | M6, apps/dashboard-backend(/chat: chat·bedrock·router·config), apps/dashboard-web(/chat), Bedrock Converse 1콜, 비용 |
+| 0035 | AI 채팅 Bedrock 모델 평가: Claude 2-tier에서 Amazon Nova profile로 전환 | accepted | 2026-06-11 | M6, apps/dashboard-backend(/chat), infra/data-dashboard ECS env/IAM, Bedrock 비용 |
+| 0036 | Hub-only rebuild spoke registration and dummy generator operations | accepted | 2026-05-21 | Hub rebuild, Spoke registration, factory-b/c dummy generator 운영 |
+| 0037 | DynamoDB: infra/data-pipeline → infra/foundation | accepted | 2026-05-21 | M4, infra/foundation, infra/data-pipeline, destroy 순서 제약 |
+| 0038 | DataProcessor freshness refresh | accepted | 2026-05-29 | M4/M6, DataProcessor refresh, pipeline_status/risk freshness |
+| 0039 | Cloud alert noise reduction and Hub-only data collection continuity | accepted | 2026-06-04 | Cloud infra alert, Hub-only rebuild, factory data continuity |
+| 0040 | YOLOv8n instead of OpenCV ML for Edge AI detection | accepted | 2026-06-08 | factory-a Edge AI, fire/smoke/fall/bending detection |
+| 0041 | Persistent MQTT for IoT Fleet Connectivity | accepted | 2026-06-09 | edge-iot-publisher, AWS IoT Fleet Indexing, factory-a/b/c connectivity |
 
 ## 파일 형식
 
@@ -123,7 +77,3 @@
 업데이트 필요한 문서
 검증
 ```
-
-## 통합 후 정리 필요
-
-- 중복/충돌 내용을 검토해 최종 source of truth를 확정한다.

@@ -1,7 +1,13 @@
 # 구현 전략 및 단계 계획
 
 상태: source of truth
-기준일: 2026-05-08
+기준일: 2026-06-17
+
+수정 이력:
+- 2026-06-17 v0.7  2026-06-16 Data/Dashboard 재생성 root destroy 상태 반영. Step 10은 build/destroy 자동화·runbook·architecture·비용 baseline 갱신 완료, 남은 작업은 재빌드 후 데모 리허설·인증 사용자 수기 검증·캡처로 정리.
+- 2026-06-04 v0.6  워크스트림 B Phase 1 Step 0~9.5 완료 + Step 10 진행 반영. Dashboard Backend/Web/Cloud Infra/RBAC/보고서 조회 운영 배포 완료, "다음 단계 Step 6" 서술 정정.
+- 2026-05-22 v0.5  워크스트림 B Phase 1 Step 2~5.5 완료 및 Data/Dashboard VPC destroy 상태, Step 6 진입 준비 반영.
+- 2026-05-20 v0.4  2026-05-15 rebuild, M3 Issue 1/4 완료, 워크스트림 B Phase 1 Step 0~3 진입 준비 상태 반영.
 
 ## 목적
 
@@ -12,14 +18,14 @@
 - Phase 0 문서 기준선 정리는 완료 상태로 유지 보수 중이다.
 - Phase 1 M0 `factory-a` Safe-Edge 기준선은 구축 및 실측 검증까지 완료됐다.
 - Phase 2 M1은 AWS MFA/Terraform 접근, Hub EKS/VPC, Hub namespace, Hub ArgoCD, foundation S3/AMP, `factory-a` IoT Thing/Policy/K3s Secret, IoT Rule -> S3 raw 적재, IRSA S3 권한, Hub Prometheus Agent 설치, AMP remote_write 수신, Grafana AMP datasource query, AWS Load Balancer Controller, Admin UI HTTPS Ingress 검증까지 진행했다.
-- Hub AWS 리소스와 foundation S3/AMP/Admin UI는 2026-05-06~2026-05-07 `build-all --admin-ui`와 `build-hub`로 재생성/검증했고, 2026-05-08 비용 정리를 위해 `destroy-all.sh`로 삭제했다.
+- Hub AWS 리소스와 foundation S3/AMP/Admin UI는 2026-05-06~2026-05-07 `build-all --admin-ui`와 `build-hub`로 재생성/검증했고, 2026-05-15 rebuild 후 활성 상태다.
 - M1 Issue 12에서 `configs/runtime/runtime-config.yaml`과 VM dummy data 추천값을 작성했다.
-- M2 Issue 1에서 Tailnet/tag/Auth Key 정책 수립과 Tailnet 확인을 완료했다.
-- M2 Issue 2에서 `factory-a-master` Tailscale 참여, ACL tag 적용, Windows 운영자 PC의 ping/SSH 접근을 검증했다.
-- 현재 다음 단계는 M3 Issue 1 배포 파이프라인 GitHub 저장소 구조 설계다.
+- M2 Issue 1~6에서 Tailnet/tag/Auth Key 정책 수립, `factory-a-master` Tailscale 참여, EKS Hub Tailscale Operator/egress 구성, `factory-a` kubeconfig/ArgoCD cluster 등록, `factory-a-podinfo-smoke` Sync/Healthy, Tailscale egress 장애/복구 검증을 완료했다.
+- 워크스트림 A의 현재 다음 단계는 M3 Issue 2 ECR image push/pull 검증과 Spoke imagePullSecret 방식 확정이다. 본 환경에서는 워크스트림 A 자산을 수정/실행하지 않는다.
+- 본 환경(워크스트림 B)은 1번 Data/Dashboard VPC Phase 1 Step 0~10의 코드/IaC/문서 자동화 대부분을 구현 완료했다. Dashboard Backend(ECS)/Web(CloudFront)/Cloud Infra/RBAC 사용자 관리/보고서 조회/이미지 스냅샷/AI 채팅 데이터 QA는 배포 검증을 마쳤고, 2026-06-16 `infra/data-dashboard` 재생성 root는 비용 절감을 위해 destroy 상태다. 현재 다음 단계는 재빌드 후 데모 리허설·인증 사용자 수기 검증·캡처다(`docs/planning/16_data_dashboard_vpc_workplan.md`).
 - `docs/issues/` 하위 마일스톤 문서를 기준으로 구현 순서를 M0~M7로 관리한다.
 - 구현 책임 경계는 `docs/planning/11_delivery_ownership_flow.md`를 source of truth로 삼는다.
-- 관리자 대시보드는 Tailscale 의존을 줄이기 위해 `docs/planning/07_dashboard_vpc_extension_plan.md`의 Dashboard VPC 방향을 따른다.
+- 사용자 대시보드는 Tailscale 의존을 줄이기 위해 `docs/planning/16_data_dashboard_vpc_workplan.md`와 `docs/planning/17_expansion_roadmap.md`의 Phase 1 통합 목표를 따른다.
 - AWS 인프라 작업 전 로컬 AWS CLI MFA 및 Terraform 접근 설정은 `docs/planning/08_aws_cli_mfa_terraform_access.md`를 따른다.
 - AWS 리소스 비용 기준은 `docs/ops/15_aws_cost_baseline.md`를 따른다.
 
@@ -150,19 +156,20 @@ Hub 생성 순서:
 
 - Tailscale 계정 및 Spoke별 키 정책: 완료
 - `factory-a` master Tailscale 참여: 완료
-- EKS Hub Tailscale 참여: 다음 작업
-- ArgoCD UI 접근 경로를 Tailscale 기반 private access로 전환
-- EKS API endpoint public CIDR 축소
-- kubeconfig Tailscale IP 기반 구성
-- ArgoCD `factory-a` 등록
-- Hub -> `factory-a` Sync 검증
+- EKS Hub Tailscale 참여: 완료
+- ArgoCD/Grafana UI 접근 경로를 Tailscale 기반 private access로 검증 완료
+- kubeconfig Tailscale IP 기반 구성: 완료
+- ArgoCD `factory-a` 등록: 완료
+- Hub -> `factory-a` Sync 검증: 완료
+- Tailscale egress 장애/복구 검증: 완료
+- EKS API endpoint public CIDR 축소: 설계 마무리 후 재검토로 보류
 
 완료 조건:
 
 - Hub에서 `factory-a` Spoke API 접근 가능
 - ArgoCD가 `factory-a`에 테스트 배포 가능
 - ArgoCD UI를 public LoadBalancer 없이 접근 가능
-- EKS API endpoint가 MVP bootstrap용 `0.0.0.0/0` 상태에서 축소됨
+- EKS API endpoint CIDR 축소는 M2 완료 조건에서 제외하고 운영 보안 강화/설계 마무리 후 재검토한다.
 
 ### Phase 4. M3 배포 파이프라인 구성
 
@@ -239,12 +246,12 @@ Hub 생성 순서:
 
 주요 작업:
 
-- Risk Score Engine 구현
+- Lambda data processor Risk 계산 로직 구현
 - `runtime-config.yaml` 적용
 - 온도/습도 기준 초안 반영
 - Risk Twin 출력 구조 구현
 - Dashboard Web/API 또는 Grafana 관제 화면 구현
-- Dashboard VPC에서 ALB/WAF/Auth를 통해 접근하고, processed S3와 latest status store를 read-only로 조회
+- Dashboard VPC에서 CloudFront/ALB/Auth를 통해 접근하고, DynamoDB LATEST/HISTORY와 S3 processed를 read-only로 조회. WAF/Shield는 후속 보안 강화 후보
 
 완료 조건:
 
@@ -276,8 +283,8 @@ Hub 생성 순서:
 | --- | --- | --- |
 | Phase 0 | 완료 | 기준 문서 |
 | Phase 1 (M0) | 완료 | `factory-a` Safe-Edge 기준선 |
-| Phase 2 (M1) | 진행 중, Issue 0~10/12 완료, Issue 11 보류 | Hub 핵심 서비스 |
-| Phase 3 (M2) | 진행 중, Issue 1~2 완료 | Mesh 기반 `factory-a` 연결 |
+| Phase 2 (M1) | 핵심 완료, Issue 0~10/12 완료, Issue 11 보류 | Hub 핵심 서비스 |
+| Phase 3 (M2) | 완료, Issue 1~6 완료 | Mesh 기반 `factory-a` 연결 |
 | Phase 4 (M3) | 후속 | 배포 파이프라인 |
 | Phase 5 (M4) | 후속 | `factory-a` 중앙 데이터 플레인 |
 | Phase 6 (M5) | 후속 | VM Spoke 확장 |

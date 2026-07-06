@@ -170,7 +170,7 @@ IoT Rule을 통해 S3 raw data 적재를 표준 경로로 둔다.
 ```text
 IoT Core
   -> S3 raw JSON
-  -> Risk Normalizer
+  -> Lambda data processor
 ```
 
 ### 대안
@@ -197,10 +197,9 @@ S3 경로는 아래처럼 공장/source_type/날짜 기준으로 나눈다.
 
 ```text
 s3://<bucket>/
-  raw/factory-a/sensor/yyyy=2026/mm=05/dd=04/<message_id>.json
-  raw/factory-a/system_status/yyyy=2026/mm=05/dd=04/<message_id>.json
+  raw/factory-a/factory_state/yyyy=2026/mm=05/dd=04/<message_id>.json
+  raw/factory-a/infra_state/yyyy=2026/mm=05/dd=04/<message_id>.json
   processed/risk-score/factory-a/yyyy=2026/mm=05/dd=04/<message_id>.json
-  latest/factory-a/status.json
 ```
 
 Risk Service로 직접 넣으면 지연은 줄어들 수 있지만, 원본 보존과 재처리 근거가 약해진다.
@@ -209,35 +208,40 @@ Risk Service로 직접 넣으면 지연은 줄어들 수 있지만, 원본 보�
 
 ```text
 IoT Core 수신 데이터는 먼저 S3에 raw JSON으로 적재한다.
-Risk Normalizer는 S3 raw data를 읽어 정규화한다.
+Lambda data processor는 IoT Core 메시지를 정규화하고 Risk 계산 결과를 DynamoDB와 S3 processed에 저장한다.
 ```
 
-## 왜 Risk 계산을 단일 Lambda가 아니라 장기 실행 서비스로 하는가
+## 왜 Risk 계산을 Lambda data processor로 통합하는가
 
 ### 선택한 방식
 
 ```text
-S3 raw data
-  -> Event Processor / Risk Normalizer
-  -> Risk Engine
-  -> processed / latest 저장
+IoT Core
+  -> IoT Rule -> S3 raw
+  -> Lambda data processor
+      -> DynamoDB LATEST
+      -> DynamoDB HISTORY
+      -> S3 processed
   -> Dashboard Backend/API
 ```
 
 ### 대안
 
 ```text
-S3 event
-  -> Lambda
-  -> DynamoDB / Timestream / S3 processed
+S3 raw data
+  -> Event Processor / Risk Normalizer service
+  -> Risk Engine service
+  -> processed / latest 저장
   -> Dashboard
 ```
 
 ### 판단
 
-Lambda는 단일 이벤트 변환이나 가벼운 후처리에 적합하다. 그러나 Aegis-Pi의 Risk 계산은 단순한 메시지 1건 변환보다 상태 기반 계산에 가깝다.
+Aegis-Pi의 MVP Risk 계산은 `factory_state`와 `infra_state` 수신 시 최신 상태를 갱신하고, 최근 그래프용 history를 남기며, 원본과 처리 결과를 S3에 보존하는 흐름이다.
 
-Risk Score Engine은 아래 판단을 해야 한다.
+이 작업은 Lambda 단일 함수 안에서도 DynamoDB LATEST/HISTORY를 상태 저장소로 두면 처리할 수 있다.
+
+Lambda data processor는 아래 판단을 수행한다.
 
 ```text
 최근 N분 센서 무수신
@@ -250,39 +254,38 @@ score_delta_10m
 safe / warning / danger 상태 전환
 ```
 
-이 계산은 공장별 최근 상태를 유지하고, 이전 상태와 현재 상태를 비교해야 한다.
+공장별 최근 상태와 이전 상태 비교는 DynamoDB LATEST/HISTORY를 기준으로 처리한다.
 
-또한 현재 관제 방향은 Risk 결과를 latest status store와 processed S3에 기록하고, 필요하면 Prometheus-compatible metrics도 함께 노출하는 구조다. 최신 클라우드 아키텍처 기준에서는 이 처리 영역을 1번 Data / Dashboard VPC에 둔다.
+별도 장기 실행 Risk 서비스/worker를 두면 EKS/ECS 배포, 네트워크, IAM, scaling, 모니터링, 롤아웃 범위가 늘어난다. 현재 MVP에서는 Dashboard의 빠른 현재 상태 조회와 최근 그래프가 핵심이므로 Lambda + DynamoDB hot store가 더 단순하다.
 
-Lambda로 구현하면 아래가 추가로 필요해진다.
+Lambda 방식에서 필요한 상태 저장소와 조회 계약은 이미 아래로 정리한다.
 
 ```text
-상태 저장소
-Lambda 배포 파이프라인
-IAM/권한 분리
-Dashboard 조회용 저장소
-별도 상태 관리와 재처리 제어
+DynamoDB LATEST: 공장별 현재 상태
+DynamoDB HISTORY: 최근 그래프
+S3 raw: 원본 장기 보존
+S3 processed: 처리 결과 장기 이력
 ```
 
-따라서 MVP에서는 Risk 계산 본체를 단일 이벤트 Lambda보다 장기 실행 서비스 또는 worker로 둔다.
+따라서 MVP에서는 Risk 계산 본체를 별도 장기 실행 서비스보다 Lambda data processor로 둔다.
 
 ### 결론
 
 ```text
-Event Processor와 Risk Engine은 1번 Data / Dashboard VPC 처리 영역에서 실행한다.
-Lambda는 필요하면 후속 보조 트리거 또는 가벼운 전처리 용도로만 검토한다.
+IoT Core 이후 cloud-side 처리 기준은 Lambda data processor다.
+별도 risk-normalizer, risk-score-engine, pipeline-status-aggregator 파드는 MVP ECR/배포 대상에서 제외한다.
 ```
 
-## 왜 Data / Dashboard VPC + latest status store인가
+## 왜 Data / Dashboard VPC + DynamoDB LATEST/HISTORY인가
 
 2026-05-09 기준 최신 확정 클라우드 아키텍처는 `docs/planning/15_cloud_architecture_final.md`를 따른다. 이 문서의 예전 `Dashboard VPC` / `Processing VPC` 표현은 1번 `Data / Dashboard VPC`와 2번 `Control / Management VPC` 기준으로 해석한다.
 
 ### 선택한 방식
 
 ```text
-Risk Score Engine
+Lambda data processor
   -> S3 processed
-  -> latest status store
+  -> DynamoDB LATEST/HISTORY
   -> Data / Dashboard VPC Web/API
   -> Route53 / ALB / WAF / Auth
 ```
@@ -296,6 +299,8 @@ Risk Score Engine
   -> Grafana Hub public exposure
 ```
 
+이 대안은 별도 Risk 서비스와 Grafana 노출을 중심으로 한 이전 검토안이며, 2026-05-14 최신 MVP 기준에서는 선택하지 않는다.
+
 ### 판단
 
 현재 `factory-a`는 이미 Grafana 기반 로컬 관제가 운영 기준선으로 검증되어 있다. 하지만 후속 본사 관리자 대시보드는 Tailscale/VPN 없이 접근할 수 있어야 한다.
@@ -303,22 +308,22 @@ Risk Score Engine
 Data / Dashboard VPC를 제어 plane과 분리하면 아래 이점이 있다.
 
 ```text
-Route53/ALB/WAF/Auth 기반 관리자 접근
+Route53/CloudFront/ALB/Auth 기반 관리자 접근 (WAF/Shield는 후속 보안 강화)
 Control / Management VPC public ingress 최소화
 Dashboard Web/API가 ArgoCD/Tailscale/EKS API에 직접 접근하지 않음
-processed S3와 latest status store만 read-only 조회
+DynamoDB LATEST/HISTORY와 S3 processed만 read-only 조회
 대시보드 침해 시 EKS/ArgoCD/Spoke API로 lateral movement 제한
 ```
 
 Grafana는 내부 관측 또는 AMP 탐색용으로 유지할 수 있지만, public 관리자 화면의 기본 방향은 Dashboard Web/API다.
 
-S3만으로 대시보드를 구성하면 최신 상태 조회가 느릴 수 있으므로 latest status store를 둔다. 일반 상태 변화는 10~35초, 장애 판정은 40~60초 반영을 MVP 목표로 삼는다.
+S3만으로 대시보드를 구성하면 최신 상태 조회가 느릴 수 있으므로 DynamoDB LATEST/HISTORY hot store를 둔다. 일반 상태 변화는 10~35초, 장애 판정은 40~60초 반영을 MVP 목표로 삼는다.
 
 ### 결론
 
 ```text
-MVP 관리자 관제는 Data / Dashboard VPC + latest status store를 목표로 한다.
-Risk Twin 결과는 latest status store와 S3 processed에 기록한다.
+MVP 관리자 관제는 Data / Dashboard VPC + DynamoDB LATEST/HISTORY를 목표로 한다.
+Risk Twin 결과는 DynamoDB LATEST/HISTORY와 S3 processed에 기록한다.
 필요하면 AMP/Grafana용 Prometheus-compatible metrics도 함께 노출한다.
 ```
 
@@ -457,6 +462,6 @@ K3s 운영 부담이 Greengrass fleet 관리보다 커지는 경우
 엣지 로컬 메시징과 필터링이 복잡해지는 경우
 Risk 계산이 단순 이벤트 변환 수준으로 축소되는 경우
 Dashboard VPC 구현 부담이 MVP 범위를 크게 초과하는 경우
-latest status store 반영 지연이 관제 요구를 만족하지 못하는 경우
+DynamoDB LATEST/HISTORY 반영 지연이 관제 요구를 만족하지 못하는 경우
 물리 장애 테스트를 정기적으로 무인 수행해야 하는 경우
 ```

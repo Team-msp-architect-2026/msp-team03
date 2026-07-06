@@ -1,7 +1,10 @@
 # Aegis-Pi Docs
 
 상태: source of truth
-기준일: 2026-05-08
+기준일: 2026-06-17
+수정 이력:
+  - 2026-06-17  2026-06-16 Data/Dashboard 재생성 root destroy 완료 상태 반영. 영구 root는 유지하되 API/ECS/RDS/Redis/Lambda 런타임은 build 전 비활성으로 구분.
+  - 2026-06-10  Data/Dashboard 빠른 build/destroy 진입점과 Foundation/root 경계 최신화.
 
 ## 목적
 
@@ -9,13 +12,14 @@
 
 ## 현재 상태
 
-- 현재 완료된 구현 범위는 `factory-a` Safe-Edge 기준선, M1 Hub Issue 0~10/12, M2 Issue 1~6이다.
+- 현재 완료된 구현 범위는 `factory-a` Safe-Edge 기준선, M1 Hub Issue 0~10/12, M2 Issue 1~6, M3 Issue 1/4이다.
 - `factory-a`는 Raspberry Pi 3-node K3s 기반 운영형 Spoke다.
 - 2026-04-30 기준 AI snapshot은 node-local hostPath를 사용하며, AI 추론 결과는 InfluxDB PVC를 통해 Longhorn에 저장한다.
 - 2026-04-30 기준 LAN 제거 및 `k3s-agent` 중지 failover/failback 재검증을 완료했다.
-- 2026-05-07 `build-hub`는 AWS Hub EKS/VPC/NAT/EIP, ArgoCD, Prometheus Agent, Grafana, AWS Load Balancer Controller, Admin UI, Hub Tailscale Operator/egress/UI/cluster Secret 복구를 자동화한다.
-- 2026-05-08 `destroy-all.sh`로 K3s IoT Secret, IoT, Hub, foundation을 삭제했고, 현재 active AEGIS AWS fixed-cost resource는 0개다.
-- M1 Issue 5에서 IoT Rule -> S3 raw 적재와 `risk/risk-normalizer` IRSA S3 권한 검증을 완료했다.
+- 2026-05-15 rebuild 후 Hub/Foundation/IoT/Admin UI가 활성 상태다.
+- **1번 Data/Dashboard VPC(워크스트림 B)는 Phase 1 Step 10 운영 정리 단계다.** `infra/data-dashboard` 재생성 root를 build/destroy 사이클로 운영한다. 2026-06-16 기준 재생성 root는 destroy 완료 상태이며, 영구 자원(CloudFront/Cognito/S3 web/ECR/도메인)은 `infra/data-dashboard-permanent`/`infra/data-dashboard-dns`에 상시 유지된다. API/ECS/RDS/Redis/Lambda 런타임은 다음 `scripts/build/build-data-dashboard.sh` 실행 전 비활성이다.
+- `build-hub`는 AWS Hub EKS/VPC/NAT/EIP, ArgoCD, Prometheus Agent, Grafana, AWS Load Balancer Controller, Admin UI, Hub Tailscale Operator/egress/UI/cluster Secret 복구를 자동화한다.
+- M1 Issue 5에서 IoT Rule -> S3 raw 적재와 M1 검증용 `risk/risk-normalizer` IRSA S3 권한 검증을 완료했다. 최신 데이터 처리 방향은 Lambda data processor와 DynamoDB/S3 processed다.
 - M1 Issue 6에서 AMP Workspace와 `observability/prometheus-agent` IRSA remote_write 권한 검증을 완료했다.
 - M1 Issue 7에서 Hub Prometheus Agent를 설치하고 AMP Query API로 `up{cluster="AEGIS-EKS"}` 수신을 검증했다.
 - M1 Issue 8에서 내부 Grafana를 설치하고 AMP datasource를 SigV4 + IRSA로 검증했다.
@@ -27,40 +31,43 @@
 - M2 Issue 3에서 EKS Hub Tailscale Operator 설치, egress Service 생성, EKS 내부 `factory-a-master` K3s API TCP `6443` reachability, ArgoCD/Grafana Tailscale IP UI 접근 검증까지 완료했다.
 - M2 Issue 4/5에서 `tls-server-name: 10.10.10.10` 기반 `factory-a` kubeconfig와 ArgoCD cluster 등록을 완료했고, cluster status `Successful`을 확인했다.
 - M2 Issue 6에서 `factory-a-podinfo-smoke` Application을 `factory-a`에 Sync해 `Synced` + `Healthy`, Pod 2개 `Running`을 확인했고, Tailscale egress Service 삭제 시 sync failure 및 재생성 후 복구를 검증했다.
-- 다음 작업은 M3 Issue 1 배포 파이프라인 저장소 구조 설계다. EKS API endpoint CIDR 축소와 M1 Issue 11 운영 보안 강화는 MVP 이후/설계 마무리 후 재검토로 보류했다.
-- `factory-b`, `factory-c`, ECR, GitHub Actions CI는 후속 단계다.
+- M3 Issue 1에서 `aegis-pi-gitops` GitOps 저장소 구조, `aegis-spoke` Helm chart, 공장별 values, ApplicationSet skeleton, manifest validation workflow를 완료했다.
+- 워크스트림 A는 M3 Issue 2 ECR push/pull 검증을 진행 중이며, 본 환경에서는 수정/실행하지 않는다.
+- 본 환경(워크스트림 B)은 1번 Data/Dashboard VPC Phase 1 Step 0~10 대부분을 구현 완료하고 Dashboard Backend/Web/Cloud Infra/RBAC/보고서 조회/이미지 스냅샷/AI 채팅 데이터 QA를 배포 검증했다. 현재는 재생성 root destroy 후 비용 절감 상태이며, 데모/수기 검증 시 재생성 root를 다시 올린다.
+- `factory-b`, `factory-c`, GitHub Actions build/deploy CI는 워크스트림 A/후속 단계다.
 - 현재 운영 source of truth는 `docs/ops/` 문서다.
 - 마일스톤 추적은 `docs/issues/` 문서를 따른다.
-- 주요 아키텍처 결정과 변경 사유는 `docs/adr/`에서 추적한다.
-- 후속 관리자 대시보드는 `planning/07_dashboard_vpc_extension_plan.md`의 Dashboard VPC 방향을 따른다.
+- 계획과 실제 구현이 달라진 결정은 `docs/changes/`에서 추적한다.
+- 사용자 대시보드는 `planning/16_data_dashboard_vpc_workplan.md`와 `planning/17_expansion_roadmap.md`의 Phase 1 통합 목표를 따른다.
 - AWS CLI MFA 및 Terraform 접근 준비는 `planning/08_aws_cli_mfa_terraform_access.md`를 따른다.
 - 인프라/설정/CI/CD 책임 경계는 `planning/11_delivery_ownership_flow.md`를 따른다.
 - M1 EKS/VPC 설계 결정은 `planning/09_m1_eks_vpc_decision_record.md`를 따른다.
 - AWS 리소스 비용 기준과 갱신 규칙은 `ops/15_aws_cost_baseline.md`를 따른다.
 
-## 평가자 빠른 검토 순서
+## 먼저 읽을 문서
 
-| 순서 | 확인할 내용 | 문서 |
-| ---: | --- | --- |
-| 1 | 프로젝트 요약과 핵심 기여 | `../README.md` |
-| 2 | 현재 구축된 `factory-a` 운영 구조 | `architecture/00_current_architecture.md` |
-| 3 | 최종 Cloud / VPC / Hub-Spoke 구조 | `planning/15_cloud_architecture_final.md` |
-| 4 | 핵심 아키텍처 결정 | `adr/README.md` |
-| 5 | M0~M7 진행 상태 | `issues/MASTER_CHECKLIST.md` |
-| 6 | 실제 장애 검증 결과 | `ops/09_failover_failback_test_results.md` |
-| 7 | 시연 흐름 | `demo/01_demo_scenario.md` |
-
-## 세부 문서 진입점
-
-| 목적 | 문서 |
-| --- | --- |
-| 운영 현황 | `ops/05_factory_a_status.md` |
-| 빠른 운영 점검 | `ops/00_quick_start.md` |
-| Edge Agent / Data Plane 계획 | `planning/06_edge_agent_deployment_plan.md`, `issues/M4_data-plane.md` |
-| Dashboard VPC / Risk Twin 계획 | `planning/07_dashboard_vpc_extension_plan.md`, `issues/M6_risk-twin-dashboard.md` |
-| Hub-Spoke Tailscale 연결 | `ops/20_tailscale_hub_spoke_runbook.md` |
-| 비용 기준 | `ops/15_aws_cost_baseline.md` |
-| 책임 경계 | `planning/11_delivery_ownership_flow.md` |
+1. `issues/SESSION_STATE.md`
+2. `AI_AGENT_HARNESS.md`
+3. `planning/16_data_dashboard_vpc_workplan.md`
+4. `planning/17_expansion_roadmap.md`
+5. `planning/15_cloud_architecture_final.md`
+6. `ops/22_data_dashboard_vpc_runbook.md`
+7. `ops/15_aws_cost_baseline.md`
+8. `product/02_requirements_definition.md`
+9. `report/03_요구사항정의서.md`
+10. `ops/05_factory_a_status.md`
+11. `ops/00_quick_start.md`
+12. `ops/01_safe_edge_bootstrap.md`
+13. `ops/06_argocd_gitops.md`
+14. `ops/07_grafana_dashboard.md`
+15. `ops/08_data_retention.md`
+16. `ops/09_failover_failback_test_results.md`
+17. `ops/10_edge_workload_placement.md`
+18. `ops/11_ansible_test_automation.md`
+19. `ops/12_iot_core_thing_secret_mount.md`
+20. `changes/README.md`
+21. `planning/11_delivery_ownership_flow.md`
+22. `issues/MASTER_CHECKLIST.md`
 
 ## 문서 구조
 
@@ -71,10 +78,9 @@ docs/
 │   ├── MASTER_CHECKLIST.md
 │   ├── M0_factory-a_safe-edge-baseline.md
 │   └── M1~M7...
-├── adr/
+├── changes/
 │   ├── README.md
-│   ├── 000-template.md
-│   └── 001~...
+│   └── 0001~...
 ├── ops/
 │   ├── 00_quick_start.md
 │   ├── 01_safe_edge_bootstrap.md
@@ -97,7 +103,8 @@ docs/
 │   ├── 18_factory_b_mac_utm_k3s.md
 │   ├── 19_factory_c_windows_virtualbox_k3s.md
 │   ├── 20_tailscale_hub_spoke_runbook.md
-│   └── 21_hub_admin_ui_ingress.md
+│   ├── 21_hub_admin_ui_ingress.md
+│   └── 22_data_dashboard_vpc_runbook.md
 ├── architecture/
 ├── planning/
 │   ├── 00_project_overview.md
@@ -137,16 +144,18 @@ Windows operator PC Tailscale IPv4: 100.67.181.8
 ## 현재 Hub 기준
 
 ```text
-AWS actual state: Hub/Foundation/IoT/Admin UI deleted after `scripts/destroy/destroy-all.sh`; AEGIS EKS KMS keys are `PendingDeletion`
+AWS actual state: Hub/Foundation/IoT/Admin UI active after 2026-05-15 rebuild; Data/Dashboard permanent/dns roots active, recreatable root destroyed on 2026-06-16
 Hub bootstrap roots:
 - infra/hub: VPC/EKS/node group, Route53/ACM, IRSA
 - scripts/ansible: namespace/LimitRange/ArgoCD/Prometheus Agent/Grafana/AWS Load Balancer Controller/Admin UI Ingress bootstrap
 - infra/foundation: S3 data bucket, AMP Workspace, IoT Rule, and future durable resources
 Build entrypoint: scripts/build/build-all.sh
-Admin UI build entrypoint: scripts/build/build-all.sh --admin-ui
+Admin UI post-NS entrypoint: scripts/build/build-admin-ui-after-ns.sh
 Hub UI entrypoint after rebuild: https://argocd.minsoo-tech.cloud and https://grafana.minsoo-tech.cloud
 Local fallback UI entrypoint: scripts/ops/argocd-port-forward.sh, scripts/ops/grafana-port-forward.sh
 Hub destroy entrypoint: scripts/destroy/destroy-hub.sh
+Data/Dashboard build entrypoint: scripts/build/build-data-dashboard.sh
+Data/Dashboard destroy entrypoint: scripts/destroy/destroy-data-dashboard.sh
 Full destroy entrypoint: scripts/destroy/destroy-all.sh
 Cost baseline: docs/ops/15_aws_cost_baseline.md
 Delivery flow: Terraform -> Ansible -> GitHub Actions CI -> GitHub/ArgoCD CD
@@ -168,8 +177,7 @@ Delivery flow: Terraform -> Ansible -> GitHub Actions CI -> GitHub/ArgoCD CD
 
 ## 다음 문서 업데이트 우선순위
 
-1. `architecture/00_current_architecture.md`
-2. `architecture/01_target_architecture.md`
-3. `specs/monitoring_dashboard/00_requirements.md`
-4. `demo/01_demo_scenario.md`
-5. `report/00_executive_summary.md`
+1. `apps/dashboard-web/**` 마이그레이션 결과에 맞춘 화면 설계서 갱신
+2. `apps/dashboard-backend/**` 구현 결과에 맞춘 Data/Dashboard runbook 갱신
+3. `docs/ops/15_aws_cost_baseline.md` 실측 비용 재갱신
+4. `docs/issues/SESSION_STATE.md` 작업 스냅샷 갱신

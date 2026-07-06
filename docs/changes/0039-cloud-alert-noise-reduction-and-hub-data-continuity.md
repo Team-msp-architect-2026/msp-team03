@@ -1,4 +1,4 @@
-# Change 0023 - Cloud alert noise reduction and Hub-only data collection continuity
+# Change 0039 - Cloud alert noise reduction and Hub-only data collection continuity
 
 상태: accepted
 결정일: 2026-06-04

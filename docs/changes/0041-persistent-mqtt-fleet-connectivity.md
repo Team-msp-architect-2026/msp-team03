@@ -1,4 +1,4 @@
-# 0032 Persistent MQTT for IoT Fleet Connectivity
+# 0041 Persistent MQTT for IoT Fleet Connectivity
 
 상태: accepted
 결정일: 2026-06-09

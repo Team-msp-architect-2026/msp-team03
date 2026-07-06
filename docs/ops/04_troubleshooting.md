@@ -1,7 +1,7 @@
 # 트러블슈팅
 
 상태: source of truth
-기준일: 2026-05-08
+기준일: 2026-06-08
 원본: `/home/vicbear/Aegis/safe-edge/troubleshooting.md`
 
 ## 목적
@@ -2147,3 +2147,301 @@ nmcli con up eth0의 eth0는 device가 아니라 connection profile 이름이다
 wlan0가 끊기면 인터넷, DNS, Tailscale control plane, image pull은 실패할 수 있다.
 하지만 eth0 static profile과 K3s 내부망은 독립적으로 유지되어야 한다.
 ```
+
+## 41. Data/Dashboard VPC 재생성 때 Route53 Hosted Zone NS가 바뀌는 문제
+
+날짜: 2026-05-26
+
+증상/상황
+
+`infra/data-dashboard`를 destroy 후 다시 apply하면 `aegis-pi.cloud` Route53 Hosted Zone이 새로 생성되고 NS 4개가 바뀐다.
+
+이 상태에서는 Gabia 네임서버 위임을 매번 수동으로 다시 입력해야 하며, 위임 전에는 ACM DNS validation이 대기 상태로 오래 멈출 수 있다.
+
+원인
+
+Route53 Hosted Zone이 VPC/App stack과 같은 Terraform root/state(`infra/data-dashboard`)에 포함되어 있었다. 따라서 데모 비용 절감을 위해 Data/Dashboard VPC를 destroy할 때 hosted zone도 같이 삭제됐다.
+
+해결/판단
+
+Hosted Zone은 월 고정 비용이 낮고 NS 위임 안정성이 중요하므로 영구 자원으로 분리한다.
+
+```text
+infra/data-dashboard-dns/ = Route53 Hosted Zone 영구 관리
+infra/data-dashboard/     = VPC, ALB, ECS, ACM, CloudFront, DNS record 등 재생성 자원 관리
+```
+
+`infra/data-dashboard-dns`의 hosted zone에는 `prevent_destroy = true`를 적용한다. `infra/data-dashboard`는 hosted zone을 생성하지 않고 data source로 조회한 뒤 ACM validation record와 `api`, `dashboard` alias record만 관리한다.
+
+state 이전 절차
+
+```bash
+terraform -chdir=infra/data-dashboard-dns init
+
+ZONE_ID=$(terraform -chdir=infra/data-dashboard output -raw route53_zone_id)
+terraform -chdir=infra/data-dashboard-dns import aws_route53_zone.dashboard "$ZONE_ID"
+
+terraform -chdir=infra/data-dashboard state rm aws_route53_zone.dashboard
+
+terraform -chdir=infra/data-dashboard plan -var="dashboard_domain_name=aegis-pi.cloud"
+terraform -chdir=infra/data-dashboard-dns plan
+```
+
+주의
+
+```text
+state rm은 AWS Route53 Hosted Zone을 삭제하지 않는다.
+기존 Terraform state에서 추적만 해제한다.
+
+import 전에 infra/data-dashboard-dns backend key가 data-dashboard와 다른지 확인한다.
+잘못된 state에 import하면 소유권이 꼬일 수 있다.
+
+이 절차 중 destroy 명령은 실행하지 않는다.
+```
+
+검증 기준
+
+```text
+infra/data-dashboard plan:
+  - aws_route53_zone.dashboard create/destroy가 없어야 함
+  - ACM validation record, api/dashboard record만 기존 zone을 참조해야 함
+
+infra/data-dashboard-dns plan:
+  - import 후 No changes
+```
+
+재발 방지/주의
+
+Hosted Zone은 Data/Dashboard destroy 대상이 아니다. destroy 후에도 남는 영구 자원으로 간주하고, 비용 기준에는 Route53 hosted zone `$0.50/월`을 계속 반영한다.
+
+## 42. DynamoDB HISTORY 과부하로 인한 cascade 504 Gateway Timeout
+
+날짜: 2026-05-28
+
+증상
+
+`/history?window=24h` 엔드포인트에 3공장 동시 조회 요청이 들어올 때 cascade 504 Gateway Timeout이 발생했다.
+
+```text
+GET /factories/factory-a/history?window=24h → 504 Gateway Timeout
+GET /factories/factory-b/history?window=24h → 504 Gateway Timeout
+GET /factories/factory-c/history?window=24h → 504 Gateway Timeout
+```
+
+원인
+
+DynamoDB HISTORY 테이블(`AEGIS-DynamoDB-FactoryStatus`)에 `HISTORY_TTL_HOURS=48h` × factory_state 3초 주기 × 3공장 기준으로 약 116,000개 이상의 `HISTORY#STATE` 아이템이 상주했다.
+
+`/history?window=24h` 조회는 24시간 구간 내 모든 아이템을 페이지 단위로 쿼리한다. 3공장이 동시에 요청하면 50개 이상의 DynamoDB Query 페이지 호출이 병렬로 발생해 backend asyncio semaphore(한도 10)가 포화됐다. 포화된 semaphore 대기열에 새 요청이 쌓이면서 연쇄적으로 504가 발생했다.
+
+아이템 수 구조:
+
+```text
+factory_state: 3초 주기 × 3,600초 × 48h = 공장당 약 57,600개
+infra_state:   20초 주기 × 3,600초 × 48h = 공장당 약  8,640개
+3공장 합계: 약 200,000개 이상 → DynamoDB Query 페이지 50회+ 병렬 발생
+```
+
+임시 조치 (sha-e17dbbf, 2026-05-28)
+
+`apps/dashboard-backend/services/ddb.py` `_get_history_sync()` 수정:
+
+```python
+ScanIndexForward=False  # 최신 아이템부터 역순 쿼리
+Limit=300               # 페이지당 최대 300개
+max_items=500           # 전체 최대 500개 cap
+# 이후 reversed() 로 오름차순 반환
+```
+
+Frontend `useFleetRecentChanges` window를 24h → 1h로 변경.
+
+최신 500개를 역순으로 가져온 뒤 오름차순으로 반환해 최신 데이터를 보존한다. 과거 구간보다 현재에 가까운 데이터가 유지된다.
+
+한계
+
+500개 cap으로 1시간 이상 이전 구간의 데이터를 버리기 때문에 해당 구간에서 발생한 스파이크(위험 수치 급등 이벤트)가 차트에서 표시되지 않는 데이터 유실 문제가 잔존한다.
+
+근본 해결 — ADR 0025 구현 완료 (2026-05-29)
+
+Multi-resolution storage 아키텍처로 전환 완료.
+
+```text
+HISTORY#STATE:  기존 HISTORY#STATE#* TTL 48h → 2h 예정 (data-processor 변경 필요).
+                현재는 48h 유지, window=1h 전용 raw 조회 경로로 사용.
+GRAPH#5M:       기존 DynamoDB 테이블 내 GRAPH#5M#* prefix. 5분 단위 집계. TTL 48h.
+                Lambda AEGIS-Lambda-GraphAggregator5m (EventBridge 5분 주기) 운영 중.
+Backend:        window=1h → HISTORY#STATE# query + max_items=500 cap 유지
+                window=6h/12h/24h → GRAPH#5M# query (cap 없음, 최대 288 items/공장)
+Frontend:       RiskScoreChart: ComposedChart — risk_score_avg Area + risk_score_min 마커
+                NodeResourceChart: GRAPH#5M 데이터 시 aggregate line fallback
+```
+
+2026-05-29 기준 DDB 상태:
+
+```text
+GRAPH#5M items: 공장당 12개 (Aggregator 최근 배포, 약 1시간치)
+HISTORY#STATE TTL: 48h (data-processor TTL 2h 변경 미적용)
+HISTORY#STATE 1h window items: ~1,700개/공장 (max_items=500 cap으로 제한)
+```
+
+현재 재발 상태:
+
+- `window=6h/12h/24h` 요청은 GRAPH#5M 경로로 분기 → semaphore 포화 없음 ✅
+- `window=1h` 요청은 max_items=500 cap 유지 → 최신 데이터 500개만 반환 ✅
+
+HISTORY#STATE TTL 2h 변경 시 추가 작업:
+
+```bash
+# data-pipeline Terraform에서 HISTORY_TTL_HOURS=2 적용 후 apply
+terraform -chdir=infra/data-pipeline plan -var="dynamodb_history_ttl_hours=2"
+terraform -chdir=infra/data-pipeline apply -var="dynamodb_history_ttl_hours=2"
+```
+
+TTL 변경 적용 후 기존 48h 아이템이 자연 만료(DynamoDB TTL eventually consistent)될 때까지
+일정 시간이 걸릴 수 있다. 그동안은 max_items=500 cap이 여전히 유효하다.
+max_items cap 제거는 HISTORY#STATE steady-state item count가 3h 미만으로 안정된 후에 한다.
+
+확인 명령
+
+```bash
+# HISTORY#STATE item count 현황
+for FACTORY in factory-a factory-b factory-c; do
+  echo -n "$FACTORY HISTORY: "
+  aws dynamodb query \
+    --region ap-south-1 \
+    --table-name AEGIS-DynamoDB-FactoryStatus \
+    --key-condition-expression 'pk = :pk AND sk BETWEEN :s AND :e' \
+    --expression-attribute-values "{\":pk\":{\"S\":\"FACTORY#$FACTORY\"},\":s\":{\"S\":\"HISTORY#STATE#\"},\":e\":{\"S\":\"HISTORY#STATE#~\"}}" \
+    --select COUNT \
+    --query 'Count' \
+    --output text
+  echo -n "$FACTORY GRAPH#5M: "
+  aws dynamodb query \
+    --region ap-south-1 \
+    --table-name AEGIS-DynamoDB-FactoryStatus \
+    --key-condition-expression 'pk = :pk AND sk BETWEEN :s AND :e' \
+    --expression-attribute-values "{\":pk\":{\"S\":\"FACTORY#$FACTORY\"},\":s\":{\"S\":\"GRAPH#5M#\"},\":e\":{\"S\":\"GRAPH#5M#~\"}}" \
+    --select COUNT \
+    --query 'Count' \
+    --output text
+done
+
+# ECS backend 로그에서 semaphore/timeout 에러 확인
+aws logs filter-log-events \
+  --region ap-south-1 \
+  --log-group-name /ecs/kjw-aegis-data-backend \
+  --filter-pattern "semaphore OR timeout OR DynamoDB" \
+  --start-time $(date -d '1 hour ago' +%s)000 \
+  --query 'events[*].message' \
+  --output text
+```
+
+## 43. Dashboard Factory 화면 자동 refresh 지연/깜빡임 및 흰 화면
+
+날짜: 2026-06-08
+
+증상/상황
+
+Dashboard Web의 Fleet/Factory 화면에서 5s~10s 자동 refresh를 켜면 다음 문제가 발생했다.
+
+- 10m trend와 1h 그래프를 위해 refresh마다 1h history를 다시 읽어 화면이 느리게 뜸.
+- 그래프가 refresh 때 spinner로 바뀌며 깜빡임.
+- 신규 포인트가 자연스럽게 추가되지 않고 전체 그래프가 다시 그려지는 것처럼 보임.
+- Factory 화면 진입 또는 빠른 factory 이동 중 흰색 바탕 화면만 남는 현상이 발생.
+- 1h 그래프 tooltip이 시간 대신 숫자 timestamp label을 표시함.
+
+원인
+
+초기 구현은 10m trend도 `/factories/{factory_id}/history?window=1h` 응답을 받아 브라우저에서 최근 10분만 필터링했다. `useFactoryHistory.refresh()`는 브라우저 cache를 강제 우회하면서 `loading=true`로 바꿨기 때문에 자동 refresh 때 기존 그래프를 유지하지 못하고 spinner로 교체됐다.
+
+또한 1h raw chart를 시간축으로 바꾸기 전에는 Recharts category/index 축과 subsampling이 섞여 새 포인트가 들어올 때 기존 점의 x좌표와 샘플링 대상이 재계산됐다. 이 때문에 데이터가 바뀌는 것처럼 보였다.
+
+Factory 화면 흰 화면은 React render 중 예외가 발생했을 때 앱 전체를 보호하는 ErrorBoundary가 없어 발생할 수 있었다. `/factory/:factoryId`는 같은 `FactoryPage` 컴포넌트 인스턴스에서 `factoryId`만 바뀌므로, 이전 factory의 async API 응답이나 history 응답이 새 factory 화면 state를 덮는 race 가능성도 있었다.
+
+확인/판단 기준
+
+```bash
+# Backend history API 계약 검증
+cd apps/dashboard-backend
+pytest -q tests/test_history.py
+
+# Dashboard Web 타입/렌더 회귀 검증
+cd apps/dashboard-web
+npm run lint
+npm test -- --run
+npm run build
+```
+
+브라우저에서 흰 화면이 보이면 DevTools Console에 React runtime error가 남는다. ErrorBoundary 적용 후에는 흰 화면 대신 오류 카드와 실제 error message가 표시되어야 한다.
+
+해결
+
+Backend history API:
+
+- `window=10m` 기본 limit을 250으로 지정.
+- `window=1h` 기본 limit을 2000으로 지정.
+- `since=<iso timestamp>` query를 추가해 자동 refresh 때 마지막 timestamp 이후 신규 item만 반환.
+
+Frontend history 조회:
+
+- Factory header 10m trend는 `window=10m&limit=250` 전용 조회로 분리.
+- 1h 그래프는 `window=1h&limit=2000` 기준 유지.
+- `useFactoryHistory`를 stale-while-revalidate 방식으로 변경해 기존 그래프를 유지하면서 delta fetch 결과만 merge.
+- WebSocket LATEST 메시지는 Factory 화면 현재 상태와 10m trend buffer에 append.
+- Fleet 카드 trend도 10m history 기준으로 delta merge.
+
+Frontend chart 렌더링:
+
+- 10m compact trend는 배열 index가 아니라 실제 timestamp 기반 x좌표로 렌더링.
+- 1h raw Risk/Sensor/AI/Node 그래프는 category axis 대신 time scale 사용.
+- 1h raw 그래프는 전체 포인트를 그대로 표시하고, line animation을 꺼 refresh 때 선이 morphing되는 느낌을 줄임.
+- 1h raw tooltip은 커스텀 tooltip으로 교체해 `HH:MM:SS`와 값/단위를 표시.
+
+Factory 화면 안정화:
+
+- `ErrorBoundary` 추가: render error 발생 시 흰 화면 대신 오류 카드와 새로고침 버튼 표시.
+- `useFactory`에 request sequence guard 추가: 이전 factory 응답이 현재 factory state를 덮지 않음.
+- `useFactoryHistory`에 key 변경 reset과 request sequence guard 추가: 이전 history 응답이 현재 그래프 state에 섞이지 않음.
+
+수정 파일
+
+```text
+apps/dashboard-backend/routers/factories.py
+apps/dashboard-backend/services/ddb.py
+apps/dashboard-backend/tests/test_history.py
+apps/dashboard-web/src/api/client.ts
+apps/dashboard-web/src/components/Chart.tsx
+apps/dashboard-web/src/components/ErrorBoundary.tsx
+apps/dashboard-web/src/components/RiskTrendChart.tsx
+apps/dashboard-web/src/hooks/useFactories.ts
+apps/dashboard-web/src/hooks/useFactory.ts
+apps/dashboard-web/src/hooks/useFactoryHistory.ts
+apps/dashboard-web/src/hooks/useFleetRecentChanges.ts
+apps/dashboard-web/src/pages/FactoryPage.tsx
+apps/dashboard-web/src/pages/FleetPage.tsx
+apps/dashboard-web/src/utils/trend.ts
+docs/specs/data_storage_pipeline.md
+docs/specs/monitoring_dashboard/02_api_spec.md
+docs/specs/monitoring_dashboard/05_screen_data_mapping.md
+```
+
+검증 결과
+
+2026-06-08 로컬 검증:
+
+```text
+apps/dashboard-backend: pytest -q tests/test_history.py → 35 passed
+apps/dashboard-backend: pytest -q → 100 passed
+apps/dashboard-web: npm run lint → 통과
+apps/dashboard-web: npm test -- --run → 59 passed
+apps/dashboard-web: npm run build → 통과
+repo root: git diff --check → 통과
+```
+
+재발 방지/주의
+
+- 10m trend를 위해 1h history를 재사용하지 않는다.
+- 자동 refresh는 full reload가 아니라 `since` delta fetch + client merge를 기본으로 한다.
+- Factory route처럼 URL 파라미터만 바뀌는 화면은 async 응답 race를 막기 위해 request sequence guard를 둔다.
+- Recharts time scale을 사용할 때 기본 tooltip label은 raw numeric x값이 될 수 있으므로, 사용자 화면에는 custom tooltip을 사용한다.
+- React SPA에는 route 전체를 보호하는 ErrorBoundary를 유지한다.

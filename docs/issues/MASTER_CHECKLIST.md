@@ -1,7 +1,12 @@
 # Aegis-Pi Master Checklist
 
 상태: working tracker
+기준일: 2026-06-17
 기준 문서: `docs/issues/M0_factory-a_safe-edge-baseline.md` ~ `docs/issues/M7_integration-test.md`
+세션 이어받기: `docs/issues/SESSION_STATE.md`
+**AI 에이전트 진입점**: `docs/AI_AGENT_HARNESS.md` — phase별 DoD · 허용/금지 파일 · 검증 명령 · 프롬프트 가이드
+수정 이력:
+- 2026-06-17  Phase 1 Step 10 진행 문구를 `build/destroy` 스크립트·runbook·drawio·architecture·비용 baseline v3.8 완료 기준으로 갱신. 현재 `infra/data-dashboard` 재생성 root는 2026-06-16 destroy 상태이며, 남은 작업은 재빌드 후 데모 리허설·인증 사용자 수기 검증·캡처임을 반영.
 
 ## 사용 방식
 
@@ -11,6 +16,7 @@
 - 마일스톤 완료 판단은 하위 Issue 전부 완료된 뒤 원본 문서의 완료 기준으로 다시 확인한다.
 - 각 issue를 진행하거나 완료하면 원본 issue 섹션의 `GitHub Issue Comment Draft`를 최신 상태로 갱신한다.
 - GitHub issue comment는 해당 draft를 기준으로 작성하되, 민감 정보는 포함하지 않는다.
+- 본 환경(워크스트림 B)에서는 워크스트림 A 영역(M1/M2/M3/M5 의 본 환경 미진행 이슈) 체크 표기를 변경하지 않는다. 합류 지점은 `docs/AI_AGENT_HARNESS.md` § 3 참조.
 
 ---
 
@@ -65,27 +71,64 @@
 
 원본: `docs/issues/M3_deploy-pipeline.md`
 
-- [ ] Issue 1 - [배포/Helm] GitHub 저장소 구조 설계 (베이스 + 공장별 values)
+- [x] Issue 1 - [배포/Helm] GitHub 저장소 구조 설계 (베이스 + 공장별 values)
 - [ ] Issue 2 - [배포/ECR] 저장소 구성 및 이미지 태그 전략
 - [ ] Issue 3 - [배포/GitHub Actions] 빌드/푸시 워크플로우 구성
-- [ ] Issue 4 - [배포/ArgoCD] ApplicationSet 구성 (`factory-a` 기준)
+- [x] Issue 4 - [배포/ArgoCD] ApplicationSet 구성 (`factory-a` 기준)
 - [ ] Issue 5 - [배포/ArgoCD] 운영형 동기화 정책 및 롤백 정책 적용
 - [ ] Issue 6 - [배포/GitHub Actions] manifest 갱신 워크플로우 구성
 - [ ] Issue 7 - [배포/GitHub Actions] 배포 검증 워크플로우 구성
 - [ ] Issue 8 - [검증/ArgoCD] `factory-a` end-to-end 배포 검증
 
+## Phase 1 통합 구현 Step (워크스트림 B, 본 환경)
+
+> 2026-05-18 결정. M4/M6의 원본 Acceptance Criteria는 그대로 유지하되, 본 환경에서의 실제 구현은 Phase 1 Step 0~10을 따른다. 상세는 `docs/planning/16_data_dashboard_vpc_workplan.md`.
+
+기준 문서:
+- `docs/changes/0012~0017` (Phase 1 결정 ADR 6종)
+- `docs/planning/17_expansion_roadmap.md` (Phase 1~4 트리거)
+- `docs/architecture/01_target_architecture.md`
+- `docs/architecture/drawio/agiespi_architecture_overview_final1.drawio` / `images/agiespi_architecture_overview_final3.drawio.png` (overview source of truth, ADR 0032)
+
+> Step 번호 정정: `docs/planning/16_data_dashboard_vpc_workplan.md`가 source of truth이며, 실제 진행 중 Step 8=운영 Frontend Vite 마이그레이션, Step 9=S3+CloudFront 배포 CI/CD + e2e 검증, Step 9.5=permanent resource split으로 재정의됐다. 아래 체크박스는 그 정정 기준으로 표기한다.
+
+- [x] Step 0 - [도메인] Gabia 신규 도메인 구매 + DNS 전파 (aegis-pi.cloud, Route53 위임)
+- [x] Step 1 - [Frontend] prototype/reference 정리 + 운영 SPA(`apps/dashboard-web/`)로 마이그레이션 (Step 8에서 완성)
+- [x] Step 2 - [Terraform] 1번 VPC 골격 (`infra/data-dashboard/`): Public/Private App/Private Data subnet × 2 AZ, IGW, NAT GW × 1, ALB, Route53, ACM, CloudFront, S3 SPA, Cognito (47 resources)
+- [x] Step 3 - [Terraform] 데이터 저장소: 기존 DDB `AEGIS-DynamoDB-FactoryStatus`(Streams), `aegis-daily-report`, S3 prefix, RDS PostgreSQL, ElastiCache Redis, Secrets Manager
+- [x] Step 4 - [협의] Lambda data processor IoT Rule trigger 방식 워크스트림 A와 합의 (ADR 0020/0021/0022) — **합류 지점**
+- [x] Step 5 - [Lambda] notifier 구현 (DDB Streams → VPC-attach → Redis PUBLISH, ~0.45초 검증)
+- [x] Step 6 - [Backend] FastAPI Dashboard Backend (REST + WebSocket + 4 데이터소스 조합)
+- [x] Step 7 - [Terraform] ECS Service / ALB / Target Group / Task Role / Listener Rule (+ Step 7.5 Route53 영구 분리)
+- [x] Step 8 - [Frontend] 운영용 Vite + React SPA 마이그레이션 (`apps/dashboard-web/`)
+- [x] Step 9 - [배포/검증] S3+CloudFront 배포 CI/CD(ADR 0023) + End-to-end 통합 검증 (cloud-side 주입 기반; IoT → DDB 실시간 경로는 factory-a Edge Agent 비활성으로 미검증)
+- [x] Step 9.5 - [Terraform] Permanent resource split (`infra/data-dashboard-permanent/` 25 resources, ADR 0024)
+- [ ] Step 10 - [운영] build/destroy 스크립트, runbook, drawio·architecture 문서 최종 갱신, 비용 baseline 실측 재갱신 (대부분 완료: `build-data-dashboard.sh`/`destroy-data-dashboard.sh`, runbook `ops/22`, overview drawio/architecture, 비용 baseline v3.8 갱신 완료. 남은 작업은 재빌드 후 데모 리허설·인증 사용자 수기 검증·캡처)
+- [ ] (별도) [LLM] Lambda report-generator + EventBridge schedule + Bedrock 일간 보고서 생성기 (ADR 0016, 팀원/후속 — Dashboard 측 S3 `reports/daily/` 조회 경로는 ADR 0029로 구현 완료)
+
+> Phase 1 이후 운영 배포로 추가된 Dashboard 기능: Factory Timeline `10m/1h/custom` + `top_causes` 원인 표시, GRAPH#5M multi-resolution history(ADR 0025/0026), Cloud Infra 상태 화면 + Fast/Slow collector(ADR 0027, `apps/cloud-infra-collector/`), staleness 60/120초 통일(ADR 0028), S3 기반 일간 보고서 조회 UI(ADR 0029), ECS backend right-sizing + Auto Scaling(ADR 0030), RBAC 사용자 관리(ADR 0031), AI 채팅 데이터 QA(ADR 0033/0035), S3 image_snapshot 조회.
+
+Phase 1 데모 시연 시나리오:
+
+1. factory-a 실제 센서 변화 → 1~2초 내 대시보드 WebSocket 갱신
+2. 사용자 권한 변경 (RDS PostgreSQL) → Cognito 다음 로그인 시 반영
+3. AI 채팅 데이터 QA로 특정 시각/스파이크/보고서/이미지 스냅샷 evidence 질의
+4. build/destroy 사이클로 비용 baseline v3.8 기준 데모 운영 비용 입증
+
 ## M4. 데이터 플레인 - `factory-a` 단일 Spoke 기준
 
 원본: `docs/issues/M4_data-plane.md`
 
-- [ ] Issue 1 - [데이터/Schema] 표준 입력 스키마 확정
-- [ ] Issue 2 - [데이터/Edge Agent] `factory-a` Edge Agent 수집/변환 로직 구현
-- [ ] Issue 3 - [데이터/Container] `factory-a` Edge Agent 컨테이너화 및 K3s 배포 준비
-- [ ] Issue 4 - [데이터/IoT Core] Edge Agent -> IoT Core 연결 및 수신 확인
-- [ ] Issue 5 - [데이터/S3] IoT Core -> S3 적재 확인 (경로 파티셔닝 포함)
-- [ ] Issue 6 - [데이터/정규화] EKS 내부 정규화/판단 서비스 구현
-- [ ] Issue 7 - [데이터/Pipeline] `pipeline_status` 주기 집계 구현 (`ops-support`)
-- [ ] Issue 8 - [검증/데이터] `factory-a` 데이터 플레인 end-to-end 검증
+> Phase 1 Step 매핑: Issue 1~5는 워크스트림 A 합의 영역(팀). Issue 6~8은 Phase 1 Step 4/9에 해당.
+
+- [ ] Issue 1 - [데이터/Schema] 표준 입력 스키마 확정 (워크스트림 A · 팀 합의)
+- [ ] Issue 2 - [데이터/Edge Agent] `factory-a` Edge Agent 수집/변환 로직 구현 (워크스트림 A · 팀 합의)
+- [ ] Issue 3 - [데이터/Container] `factory-a` Edge Agent 컨테이너화 및 K3s 배포 준비 (워크스트림 A · 팀 합의)
+- [ ] Issue 4 - [데이터/IoT Core] Edge Agent → IoT Core 연결 및 수신 확인 (워크스트림 A · 팀 합의)
+- [ ] Issue 5 - [데이터/S3] IoT Core → S3 적재 확인 (워크스트림 A · 팀 합의)
+- [x] Issue 6 - [데이터/Lambda] IoT Core Lambda data processor 구현 → Phase 1 Step 4 (ADR 0021/0022). `apps/data-processor/` 구현, IoT Rule 2개와 DDB LATEST/HISTORY + S3 processed e2e 검증 완료. 현재 runtime은 2026-06-16 `infra/data-dashboard` destroy로 비활성
+- [x] Issue 7 - [데이터/Pipeline] `pipeline_status` Lambda 처리 검증 (`apps/data-processor/pipeline_status.py`, staleness 60/120초 ADR 0028)
+- [ ] Issue 8 - [검증/데이터] `factory-a` 데이터 플레인 end-to-end 검증 → cloud-side(주입 → DDB → S3 → Dashboard) 검증 완료. factory-a Edge Agent → IoT Core 실시간 경로는 Edge Agent 비활성으로 미검증 (후속)
 
 ## M5. VM Spoke 확장 - `factory-b`, `factory-c`
 
@@ -103,19 +146,24 @@
 
 원본: `docs/issues/M6_risk-twin-dashboard.md`
 
-- [ ] Issue 1 - [Risk/Engine] Risk Score Engine 구현 (가중치 초기안)
-- [ ] Issue 2 - [Risk/Config] `runtime-config.yaml` 전역 설정 적용 및 필드 제어 구현
-- [ ] Issue 3 - [Risk/Config] 온도/습도 이상 기준값 초안 적용
-- [ ] Issue 4 - [Risk/Twin] Risk Twin 출력 구조 구현
-- [ ] Issue 5 - [관제/Dashboard] 메인 대시보드 - 공장별 위험도 카드
-- [ ] Issue 6 - [관제/Dashboard] 메인 대시보드 - 센서 현황 + 이상 시스템 목록
-- [ ] Issue 7 - [관제/Dashboard] 메인 대시보드 - 하단 이벤트/상태 변화 로그
-- [ ] Issue 8 - [검증/Risk] 시나리오별 Risk Score 변화 확인
+> Phase 1 Step 매핑: Issue 1~4는 Lambda data processor 내부 단계 (워크스트림 A 합의). Issue 5~8은 Phase 1 Step 1/6/8/9에 해당. 메타·권한·알림룰·LLM 보고서는 ADR 0017/0014/0015/0016으로 추가됨.
+
+- [x] Issue 1 - [Risk/Lambda] Lambda Risk 계산 로직 구현 (가중치 초기안) — `apps/data-processor/risk.py` (안전점수 방식)
+- [ ] Issue 2 - [Risk/Config] `runtime-config.yaml` 전역 설정 적용 및 필드 제어 구현 (후속)
+- [ ] Issue 3 - [Risk/Config] 온도/습도 이상 기준값 초안 적용 (data-processor 내 임계값 일부 반영, 정식 튜닝 후속)
+- [x] Issue 4 - [Risk/Twin] Risk Twin 출력 구조 구현 — DDB `FACTORY#` LATEST/HISTORY#STATE/GRAPH#5M 구조 (ADR 0026)
+- [x] Issue 5 - [관제/Dashboard] 메인 대시보드 - 공장별 위험도 카드 (Fleet 화면)
+- [x] Issue 6 - [관제/Dashboard] 메인 대시보드 - 센서 현황 + 이상 시스템 목록 (Factory 화면, WebSocket 실시간 갱신)
+- [x] Issue 7 - [관제/Dashboard] 메인 대시보드 - 이벤트/상태 변화 로그 (Factory Timeline `10m/1h/custom` + `top_causes`)
+- [ ] Issue 8 - [검증/Risk] 시나리오별 Risk Score 변화 확인 → cloud-side 표시 검증 완료, 실시간 시나리오 변화 검증은 Edge Agent 재활성 후 후속
+- [x] (Phase 1 추가) RDS PostgreSQL 메타·권한 관리 화면 — 공장별 RBAC + `/admin/users` 사용자 관리 (ADR 0031). 알림룰 화면은 후속
+- [ ] (Phase 1 추가) LLM 일간 보고서 탭 — 조회 경로(S3 `reports/daily/` Markdown 렌더링, ADR 0029)는 구현 완료, Bedrock 생성기는 팀원/후속 (ADR 0016)
 
 ## M7. 통합 검증
 
 원본: `docs/issues/M7_integration-test.md`
 
+- [ ] Issue 0 - [리팩토링/CI-CD] 최종 테스트 전 Repository 분리 및 OIDC 기반 파이프라인 정리
 - [ ] Issue 1 - [검증/운영형] `factory-a` 운영형 시나리오 검증
 - [ ] Issue 2 - [검증/테스트베드] `factory-b`, `factory-c` 테스트베드형 시나리오 검증
 - [ ] Issue 3 - [검증/Failover] Failover 시나리오 (Worker-2 장애 -> Worker-1 승계 -> Hub 반영)
